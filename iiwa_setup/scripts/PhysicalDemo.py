@@ -89,7 +89,7 @@ class TrajPosOut(LeafSystem):
         self.prevTime = 0
         self.first = True
         self.prevout = [None]
-        self.order = [0, 0, -2, 0, -2, 0, 0, -2, 0, -2, 0, -2, 0, -2]
+        self.order = [0, 0, -2, 0, -2, 0, 0, -2, 0, -2, 0, -2, 0, 0, -2, 0, -2, 0, -5]
         self.endCondTime = False
         self.startTime = 0
         self.firstRunToStart = True
@@ -262,7 +262,7 @@ class WSGOut(LeafSystem):
         LeafSystem.__init__(self)
         self.DeclareVectorOutputPort("wsg_position", BasicVector(1), self.calciiwaPos)
         self.statusTime = self.DeclareVectorInputPort("statusTime", 1)
-        self.closeTimes = [2, 3, 7, 8, 11, 12]
+        self.closeTimes = [2, 3, 7, 8, 11, 12, 13, 17]
         
     def calciiwaPos(self, context, output):
 
@@ -804,6 +804,7 @@ seeds = OrderedDict()
 
 seeds["ZeroedPosition"] = [0, 0, 0, 0, 0, 0, 0]
 seeds["Above Bin 2"] = [0, 0.3, 0, -1.8, 0, 1, 1.57]
+seeds["Deposit Pos 2"] = [-0.262, 0.3, 0, -1.8, 0, 1, (1.57)]
 seeds["In Bin 2"] = [0, 0.48, 0, -1.88, 0, 0.67, 1.57]
 seeds["In Bin 1"] = [-1.56, 0.62, 0, -1.74, 0, 0.67, 1.57]
 seeds["Above Bin 1"] = [-1.57, 0.3, 0, -1.8, 0, 1, 1.57]
@@ -1059,6 +1060,7 @@ del iris_regions["GraspPos7"]
 del iris_regions["GraspPos8"]
 del iris_regions["GraspPos9"]
 del iris_regions["GraspPos15"]
+del iris_regions["TransitionNoObs"]
 
 #meshcat.Delete()
 
@@ -1112,6 +1114,10 @@ cupGrab[-1] += math.pi/8
 cupUp = [-1.69340663, 0.68390589, -0.29562936, -1.3059921, 0.20039026, 1.17915618, -2.00987056]
 cupUp[-1] += math.pi/8
 
+glassUp = [-0.95816858, 0.58765876, -0.52798669, -1.61296202, 0.34795992, 1.00571432, (3.05432619 - (math.pi / 7))]
+
+glassGrab = [-0.95816858, 0.71765876, -0.52798669, -1.61296202, 0.34795992, 1.00571432, (3.05432619 - (math.pi / 7))]
+
 trajs.append(GcsTrajOpt(seeds["Transition"], jelloUpPos))
 
 linMoveTraj = PiecewisePose.MakeLinear([0, 0.15], [newCand1, oldCand])
@@ -1132,6 +1138,10 @@ trajs.append(GcsTrajOpt(seeds["Above Bin 2"], cupGrab))
 trajs.append(GcsTrajOpt(cupGrab, tideUpPos))
 
 trajs.append(GcsTrajOpt(tideUpPos, seeds["Above Bin 2"]))
+
+trajs.append(GcsTrajOpt(seeds["Above Bin 2"], glassUp))
+
+trajs.append(GcsTrajOpt(glassGrab, seeds["Deposit Pos 2"]))
 
 
 diagram, context, robot, objPos, plant = make_environment_model_display(
