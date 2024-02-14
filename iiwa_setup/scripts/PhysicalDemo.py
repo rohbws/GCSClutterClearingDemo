@@ -1066,7 +1066,11 @@ del iris_regions["Transition"]
 
 #meshcat.Delete()
 
-trajs = []
+if (True):
+    with open('trajs.pickle', 'rb') as f:
+        trajs = pickle.load(f)
+else:
+    trajs = []
 
 assert (
     seeds
