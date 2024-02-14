@@ -61,6 +61,8 @@ from pydrake.all import DiagramBuilder, MeshcatVisualizer, Simulator
 
 from iiwa_setup.iiwa import IiwaForwardKinematics, IiwaHardwareStationDiagram
 
+import pickle
+
 
 iris_filename = "my_iris.yaml"
 iris_regions = dict()
@@ -1060,7 +1062,7 @@ del iris_regions["GraspPos7"]
 del iris_regions["GraspPos8"]
 del iris_regions["GraspPos9"]
 del iris_regions["GraspPos15"]
-del iris_regions["TransitionNoObs"]
+del iris_regions["Transition"]
 
 #meshcat.Delete()
 
@@ -1143,6 +1145,8 @@ trajs.append(GcsTrajOpt(seeds["Above Bin 2"], glassUp))
 
 trajs.append(GcsTrajOpt(glassGrab, seeds["Deposit Pos 2"]))
 
+with open('trajs.pickle', 'wb') as f:
+    pickle.dump(trajs, f)
 
 diagram, context, robot, objPos, plant = make_environment_model_display(
     trajs, rng=np.random.default_rng(), num_ycb_objects=1, draw=True
