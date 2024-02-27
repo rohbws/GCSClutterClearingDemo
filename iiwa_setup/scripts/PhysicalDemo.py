@@ -74,12 +74,14 @@ def xyz_rpy_deg(xyz, rpy_deg):
     return RigidTransform(RollPitchYaw(rpy_deg * np.pi / 180), xyz)
 
 class TrajPosOut(LeafSystem):
-    def __init__(self, plant, traj):
+    def __init__(self, plant, traj, plant_context):
         LeafSystem.__init__(self)
         self.traje = traj
         self.plant = plant
-        self.plant_context = self.plant.CreateDefaultContext()
+        self.plant_context = plant_context
         self.gripper = self.plant.GetModelInstanceByName("wsg")
+
+        self.plantIK, self.contextIK = LoadRobotHardwareStation()
 
         self.iiwaPos = self.DeclareVectorInputPort("iiwa_measured", BasicVector(7))
         
@@ -91,11 +93,14 @@ class TrajPosOut(LeafSystem):
         self.prevTime = 0
         self.first = True
         self.prevout = [None]
-        self.order = [0, 0, -2, 0, 0, -2, 0, 0, -2, 0, 0, -2, 0, 0, -2, 0, 0, -2, 0, 0, 0, -2, 0, -2]
+        self.order = [0, 0, -2, 0, 0, -2, 0, 0, -2, 0, 0, -2, 0, 0, -2, 0, 0, -2, 0, 0, 0, -2, 0,0, -2]
+        self.order = [0, -5, 2]
         self.endCondTime = False
         self.startTime = 0
         self.firstRunToStart = True
         self.lastPos = [None]
+
+        self.fastMoves = [3, 4, 9, 10, 15, 16]
                                      
     def getI(self, context, output):
         output.SetFromVector([self.outTraj])
@@ -109,7 +114,7 @@ class TrajPosOut(LeafSystem):
 
         distToEnd = self.calcDistToEnd(context, endPos)
 
-        print(distToEnd)
+        #print(distToEnd)
 
         if self.incrTrajVal(context, distToEnd):
             self.stackTime = context.get_time()
@@ -139,9 +144,11 @@ class TrajPosOut(LeafSystem):
             linMoveTrajPos = self.traje[self.currTraj].get_position_trajectory()
             linMoveTrajAng = self.traje[self.currTraj].get_orientation_trajectory()
             X_G = RigidTransform(Quaternion(linMoveTrajAng.value(self.traje[self.currTraj].end_time())), linMoveTrajPos.value(self.traje[self.currTraj].end_time()))
-            endPos = MyInverseKinematics(X_G, self.plant, self.plant_context, self.gripper)[0:7]
+            endPos = MyInverseKinematics(X_G,self.plantIK, self.contextIK)
             if self.lastPos[0]:
-                endPos = MyInverseKinematics(X_G, self.plant, self.plant_context, self.gripper, self.lastPos)[0:7]
+                endPos = MyInverseKinematics(X_G, self.plantIK, self.contextIK, self.lastPos)
+        elif self.order[self.outTraj] == 2:
+            return self.traje[self.currTraj][-1]
         else:
             return self.iiwaPos.Eval(context)
         
@@ -156,9 +163,12 @@ class TrajPosOut(LeafSystem):
             linMoveTrajPos = self.traje[self.currTraj].get_position_trajectory()
             linMoveTrajAng = self.traje[self.currTraj].get_orientation_trajectory()
             X_G = RigidTransform(Quaternion(linMoveTrajAng.value(0)), linMoveTrajPos.value(0))
-            startPos = MyInverseKinematics(X_G, self.plant, self.plant_context, self.gripper)[0:7]
+            startPos = MyInverseKinematics(X_G,self.plantIK, self.contextIK)
             if self.lastPos[0]:
-                startPos = MyInverseKinematics(X_G, self.plant, self.plant_context, self.gripper, self.lastPos)[0:7]
+                print("TEST")
+                startPos = MyInverseKinematics(X_G, self.plantIK, self.contextIK, self.lastPos)
+        elif self.order[self.outTraj] == 2:
+            startPos = (self.traje[self.currTraj][0]).copy()
         else:
             return self.iiwaPos.Eval(context)
         
@@ -236,20 +246,25 @@ class TrajPosOut(LeafSystem):
         if self.order[self.outTraj] == 0:
             print("test0")
             currTime = context.get_time()
-            coef = 0.20
+            coef = 0.25
 
             if self.outTraj >= 21:
-                coef = 0.10
+                coef = 0.15
+            elif self.outTraj in self.fastMoves:
+                coef = 0.35
             newPos = self.traje[self.currTraj].value((currTime - self.stackTime) * coef)
         elif self.order[self.outTraj] == 1:
             linMoveTrajPos = self.traje[self.currTraj].get_position_trajectory()
             linMoveTrajAng = self.traje[self.currTraj].get_orientation_trajectory()
             currTime = context.get_time()
             X_G = RigidTransform(Quaternion(linMoveTrajAng.value((currTime - self.stackTime) * 0.05)), linMoveTrajPos.value((currTime - self.stackTime) * 0.05))
-            newPos = MyInverseKinematics(X_G, self.plant, self.plant_context, self.gripper)[0:7]
+            newPos = MyInverseKinematics(X_G,self.plantIK, self.contextIK)
             if self.lastPos[0]:
-                newPos = MyInverseKinematics(X_G, self.plant, self.plant_context, self.gripper, self.lastPos)[0:7]
+                newPos = MyInverseKinematics(X_G, self.plantIK, self.contextIK, self.lastPos)
             print("test1")
+        elif self.order[self.outTraj] == 2:
+            newPos = (self.traje[self.currTraj][int((context.get_time() - self.stackTime) * 5)]).copy()
+            print(newPos)
         elif self.order[self.outTraj] < 0:
             print("test2")
             if not self.lastPos[0]:
@@ -268,7 +283,7 @@ class WSGOut(LeafSystem):
         LeafSystem.__init__(self)
         self.DeclareVectorOutputPort("wsg_position", BasicVector(1), self.calciiwaPos)
         self.statusTime = self.DeclareVectorInputPort("statusTime", 1)
-        self.closeTimes = [2, 3, 4, 8, 9, 10, 14, 15, 16, 21, 22]
+        self.closeTimes = [2, 3, 4, 8, 9, 10, 14, 15, 16, 21, 22, 23]
         
     def calciiwaPos(self, context, output):
 
@@ -362,7 +377,7 @@ def make_environment_model_display(
     station: IiwaHardwareStationDiagram = builder.AddNamedSystem(
         "station",
         IiwaHardwareStationDiagram(
-            scenario=scenario, has_wsg=True, use_hardware=True,
+            scenario=scenario, has_wsg=True, use_hardware=False,
         ),
     )
 
@@ -378,7 +393,7 @@ def make_environment_model_display(
        
     AddRgbdSensors(builder, plant, scene_graph)
     
-    iiwa_controller = builder.AddSystem(TrajPosOut(plant, traj))
+    iiwa_controller = builder.AddSystem(TrajPosOut(plant, traj, station.get_internal_plant_context()))
     iiwa_controller.set_name("iiwa_controller")
     
     wsg_controller = builder.AddSystem(WSGOut(plant))
@@ -403,7 +418,7 @@ def make_environment_model_display(
     objPos = [0]
 
         
-    return diagram, context, robot, objPos, plant
+    return diagram, context, robot, objPos, plant, station.get_internal_plant_context()
 
 def make_environment_model(
     directive=None, draw=False, rng=None, num_ycb_objects=0, bin_name="bin0", plant=None, scene_graph=None, builder=None
@@ -585,41 +600,38 @@ def make_internal_model():
 # Sometimes it's useful to use inverse kinematics to find the seeds. You might
 # need to adapt this to your robot. This helper takes an end-effector frame, E,
 # and a desired pose for that frame in the world coordinates, X_WE.
-def MyInverseKinematics(X_WE, plant=None, context=None, gripper=None, plantPos = [None]):
-    if not plant:
-        plant = MultibodyPlant(0.0)
-        #ee_body = LoadRobot(plant)
-        plant.Finalize()
-    if not context:
-        context = plant.CreateDefaultContext()
+def MyInverseKinematics(X_WE,plant, context, plantPos = [None]):
     # E = ee_body.body_frame()
-    E = plant.GetBodyByName("body", gripper).body_frame()
+    wsg = plant.GetModelInstanceByName("wsg")
+
+    gripper_frame = plant.GetBodyByName("body", wsg).body_frame()
 
     ik = InverseKinematics(plant, context)
 
     ik.AddPositionConstraint(
-        E, [0, 0, 0], plant.world_frame(), X_WE.translation(), X_WE.translation()
+        gripper_frame, [0, 0, 0], plant.world_frame(), X_WE.translation(), X_WE.translation(),
     )
 
     ik.AddOrientationConstraint(
-        E, RotationMatrix(), plant.world_frame(), X_WE.rotation(), 0.01
+        gripper_frame, RotationMatrix(), plant.world_frame(), X_WE.rotation(), 0.001,
     )
-
+    
     prog = ik.get_mutable_prog()
     q = ik.q()
     q0 = plant.GetPositions(context)
-
-    prog.AddQuadraticErrorCost(np.identity(len(q)), q0, q)
+    
     if not plantPos[0]:
+        prog.AddQuadraticErrorCost(np.identity(len(q)), q0, q)
         prog.SetInitialGuess(q, q0)
     else:
-        prog.SetInitialGuess(q, q0)
+        prog.AddQuadraticErrorCost(np.identity(len(q)), plantPos, q)
+        prog.SetInitialGuess(q, plantPos)
+    
     result = Solve(ik.prog())
     if not result.is_success():
         print("IK failed")
+        return plantPos
 
-        return None
-    plant.SetPositions(context, result.GetSolution(q))
     return result.GetSolution(q)
 
 def grasp_score_inspector():
@@ -811,6 +823,8 @@ seeds = OrderedDict()
 seeds["ZeroedPosition"] = [0, 0, 0, 0, 0, 0, 0]
 seeds["Above Bin 2"] = [0, 0.3, 0, -1.8, 0, 1, 1.57]
 seeds["Deposit Pos 2"] = [-0.262, 0.3, 0, -1.8, 0, 1, (1.57)]
+seeds["Deposit Pos 2 Up"] = [-0.262, 0.0, 0, -1.8, 0, 1, (1.57)]
+
 seeds["In Bin 2"] = [0, 0.48, 0, -1.88, 0, 0.67, 1.57]
 seeds["In Bin 1"] = [-1.56, 0.62, 0, -1.74, 0, 0.67, 1.57]
 seeds["Above Bin 1"] = [-1.57, 0.3, 0, -1.8, 0, 1, 1.57]
@@ -984,7 +998,7 @@ directives:
     child: wsg::body
     X_PC:
       translation: [0, 0, 0.114]
-      rotation: !Rpy { deg: [90.0, 0.0, 90.0 ]}
+      rotation: !Rpy { deg: [90.0, 0.0, 0.0 ]}
     """
 
     scenario = load_scenario(data=model_directives)
@@ -1045,6 +1059,31 @@ def GcsTrajOpt(q_start, q_goal):
     
     for edge in gcs.graph_of_convex_sets().Edges():
         print(result.GetSolution(edge.phi()))
+
+def convertToTraj(oldTraj, startPos = None):
+    plantIK, diagramIK = LoadRobotHardwareStation()
+    contextIK = diagramIK.CreateDefaultContext()
+    plantContextiK = plantIK.GetMyContextFromRoot(contextIK)
+    linMoveTrajPos = oldTraj.get_position_trajectory()
+    linMoveTrajAng = oldTraj.get_orientation_trajectory()
+    X_G = RigidTransform(Quaternion(linMoveTrajAng.value(0)), linMoveTrajPos.value(0))
+
+    if not startPos:
+        startPos = MyInverseKinematics(X_G, plantIK, plantContextiK)
+    
+    trajReturn = []
+
+    for t in np.append(
+            np.arange(oldTraj.start_time(), oldTraj.end_time(), 0.01),
+            oldTraj.end_time(),
+        ):
+        X_G = RigidTransform(Quaternion(linMoveTrajAng.value(t)), linMoveTrajPos.value(t))
+        newPos = MyInverseKinematics(X_G, plantIK, plantContextiK, startPos)
+        trajReturn.append(newPos)
+        startPos = newPos
+
+    return trajReturn
+
         
 del iris_regions["GraspPos12"]
 del iris_regions["GraspPos13"]
@@ -1085,29 +1124,33 @@ assert (
     seeds
 ), "The examples here use the 'manually-specified seeds' from the  section above. Please run that section first, or populate your own start and end configurations."
 
-diagram, context, robot, objPos, plant = make_environment_model_display(
+diagram, context, robot, objPos, plant, internalPlantContext = make_environment_model_display(
     trajs, rng=np.random.default_rng(), num_ycb_objects=1, draw=True
 )
 
 newCand1 = RigidTransform(
-  R=RotationMatrix([
-    [-0.008079353216596585, 4.558330880033434e-06, -0.9999673614827753],
-    [0.9999671901480847, -0.0005853701365752251, -0.00807935450067565],
-    [-0.0005853878593329309, -0.9999998286604979, 1.7123077378222717e-07],
-  ]),
-  p=[-0.1872923243783441, -0.5996073539063466, 0.33835223101577865],
+ R=RotationMatrix([
+   [0.05565567547520678, -0.0002444713294406653, -0.9984499917477929],
+   [0.998439517819967, -0.004573334192722878, 0.05565621142149002],
+   [-0.00457985183498183, -0.9999895123690703, -1.0442167382385126e-05],
+ ]),
+ p=[-0.08398625420868182, -0.44822613274600115, 0.33908292428232244],
 )
+
 
 oldCand = RigidTransform(
-  R=RotationMatrix([
-    [-0.008079353216596585, 4.558330880033434e-06, -0.9999673614827753],
-    [0.9999671901480847, -0.0005853701365752251, -0.00807935450067565],
-    [-0.0005853878593329309, -0.9999998286604979, 1.7123077378222717e-07],
-  ]),
-  p=[-0.1872923243783441, -0.5996073539063466, 0.23835223101577865],
+ R=RotationMatrix([
+   [0.05565567547520678, -0.0002444713294406653, -0.9984499917477929],
+   [0.998439517819967, -0.004573334192722878, 0.05565621142149002],
+   [-0.00457985183498183, -0.9999895123690703, -1.0442167382385126e-05],
+ ]),
+ p=[-0.08398625420868182, -0.44822613274600115, 0.23908292428232244],
 )
 
+
 gripper = plant.GetModelInstanceByName("wsg")
+context = diagram.CreateDefaultContext()
+plantIK, contextIK = LoadRobotHardwareStation()
 
 jelloUpPos = [-2.28218173, 0.36183194, 0.6409329, -1.87001069, -0.25713113, 0.98730485, -1.4742302 ]
 
@@ -1130,15 +1173,18 @@ cupUp = [-1.69340663, 0.68390589, -0.29562936, -1.3059921, 0.20039026, 1.1791561
 cupUp[-1] += math.pi/8
 
 glassUp = [-0.95816858, 0.58765876, -0.52798669, -1.61296202, 0.34795992, 1.00571432, (3.05432619 - (math.pi / 7))]
-glassUpBigger = [-0.95816858, 0.40765876, -0.52798669, -1.61296202, 0.34795992, 1.00571432, (3.05432619 - (math.pi / 7))]
+glassUpBigger = [-0.95816858, 0.30765876, -0.52798669, -1.61296202, 0.34795992, 1.00571432, (3.05432619 - (math.pi / 7))]
 
 glassGrab = [-0.95816858, 0.69765876, -0.52798669, -1.61296202, 0.34795992, 1.00571432, (3.05432619 - (math.pi / 7))]
 
 trajs.append(GcsTrajOpt(seeds["Transition"], jelloUpPos))
-#print(trajs[0].vector_values(np.array(plant.GetPositions(plant.CreateDefaultContext())).flatten()))
 
-linMoveTraj = PiecewisePose.MakeLinear([0, 0.15], [newCand1, oldCand])
-#trajs.append(linMoveTraj)
+linMoveTraj = PiecewisePose.MakeLinear([0, 1.0], [newCand1, oldCand])
+
+trajs.append(convertToTraj(linMoveTraj, startPos=jelloUpPos))
+ 
+'''
+trajs.append(GcsTrajOpt(seeds["Transition"], jelloUpPos))
 
 trajs.append(GcsTrajOpt(jelloUpPos, jelloGrab))
 
@@ -1168,14 +1214,15 @@ trajs.append(GcsTrajOpt(seeds["Between Bins"], glassUp))
 
 trajs.append(GcsTrajOpt(glassUp, glassGrab))
 
-#trajs.append(GcsTrajOpt(glassGrab, glassUpBigger))
+trajs.append(GcsTrajOpt(glassUpBigger, seeds["Deposit Pos 2 Up"]))
 
-trajs.append(GcsTrajOpt(glassUpBigger, seeds["Deposit Pos 2"]))
+trajs.append(GcsTrajOpt(seeds["Deposit Pos 2 Up"], seeds["Deposit Pos 2"]))
 
 #trajs.append(GcsTrajOpt(seeds["Between Bins"], seeds["Deposit Pos 2"]))
+'''
 
 
-diagram, context, robot, objPos, plant = make_environment_model_display(
+diagram, context, robot, objPos, plant, internalPlantContext = make_environment_model_display(
     trajs, rng=np.random.default_rng(), num_ycb_objects=1, draw=True
 )
 
