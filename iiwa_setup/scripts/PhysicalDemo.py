@@ -59,7 +59,9 @@ from manipulation.scenarios import AddIiwaDifferentialIK
 from manipulation.station import load_scenario
 from pydrake.all import DiagramBuilder, MeshcatVisualizer, Simulator
 
-from iiwa_setup.iiwa import IiwaForwardKinematics, IiwaHardwareStationDiagram
+from iiwa_setup.iiwa import IiwaHardwareStationDiagram
+
+from forward_kinematics import forward_kinematics, IiwaForwardKinematics
 
 import pickle
 
@@ -93,8 +95,7 @@ class TrajPosOut(LeafSystem):
         self.prevTime = 0
         self.first = True
         self.prevout = [None]
-        self.order = [0, 0, -2, 0, 0, -2, 0, 0, -2, 0, 0, -2, 0, 0, -2, 0, 0, -2, 0, 0, 0, -2, 0,0, -2]
-        self.order = [0, -5, 2]
+        self.order = [0, 2, -2, 0, 0, -2, 0, 2, -2, 0, 0, -2, 0, 0, 2, -2, 0, 0, -2, 0, 0, 2, -2, 0,0, -2]
         self.endCondTime = False
         self.startTime = 0
         self.firstRunToStart = True
@@ -114,7 +115,7 @@ class TrajPosOut(LeafSystem):
 
         distToEnd = self.calcDistToEnd(context, endPos)
 
-        #print(distToEnd)
+        print(distToEnd)
 
         if self.incrTrajVal(context, distToEnd):
             self.stackTime = context.get_time()
@@ -148,7 +149,7 @@ class TrajPosOut(LeafSystem):
             if self.lastPos[0]:
                 endPos = MyInverseKinematics(X_G, self.plantIK, self.contextIK, self.lastPos)
         elif self.order[self.outTraj] == 2:
-            return self.traje[self.currTraj][-1]
+            endPos = (self.traje[self.currTraj][-1]).copy()
         else:
             return self.iiwaPos.Eval(context)
         
@@ -165,7 +166,6 @@ class TrajPosOut(LeafSystem):
             X_G = RigidTransform(Quaternion(linMoveTrajAng.value(0)), linMoveTrajPos.value(0))
             startPos = MyInverseKinematics(X_G,self.plantIK, self.contextIK)
             if self.lastPos[0]:
-                print("TEST")
                 startPos = MyInverseKinematics(X_G, self.plantIK, self.contextIK, self.lastPos)
         elif self.order[self.outTraj] == 2:
             startPos = (self.traje[self.currTraj][0]).copy()
@@ -224,20 +224,6 @@ class TrajPosOut(LeafSystem):
             targPos = targPosCoeff * np.array(self.lastPos) + (1-targPosCoeff) * startPos
         self.prevout = targPos
         return targPos
-    
-
-    '''
-    def runToStart(self, context, startPos):
-        targPos = 0
-        if not self.lastPos[0]:
-            self.prevout = self.iiwaPos.Eval(context)
-            self.firstRunToStart = False
-            targPos = 0.9995 * np.array(self.prevout) + 0.0005 * startPos
-        else:
-            targPos = 0.9995 * np.array(self.lastPos) + 0.0005 * startPos
-        self.prevout = targPos
-        return targPos
-   '''     
         
     
     def determinePoseVal(self, context):
@@ -263,8 +249,9 @@ class TrajPosOut(LeafSystem):
                 newPos = MyInverseKinematics(X_G, self.plantIK, self.contextIK, self.lastPos)
             print("test1")
         elif self.order[self.outTraj] == 2:
-            newPos = (self.traje[self.currTraj][int((context.get_time() - self.stackTime) * 5)]).copy()
-            print(newPos)
+            moveTime = int((context.get_time() - self.stackTime) * 15)
+            moveTime = min(moveTime, len(self.traje[self.currTraj]) - 1)
+            newPos = (self.traje[self.currTraj][moveTime]).copy()
         elif self.order[self.outTraj] < 0:
             print("test2")
             if not self.lastPos[0]:
@@ -634,79 +621,6 @@ def MyInverseKinematics(X_WE,plant, context, plantPos = [None]):
 
     return result.GetSolution(q)
 
-def grasp_score_inspector():
-    meshcat.Delete()
-    environment, environment_context = make_environment_model(
-        directive="package://manipulation/clutter_mustard.dmd.yaml", draw=True
-    )
-
-    internal_model = make_internal_model()
-
-    # Finally, we'll build a diagram for running our visualization
-    builder = DiagramBuilder()
-    plant, scene_graph = AddMultibodyPlantSceneGraph(builder, time_step=0.001)
-    parser = Parser(plant)
-    ConfigureParser(parser)
-    parser.AddModelsFromUrl("package://manipulation/clutter_planning.dmd.yaml")
-    AddFloatingRpyJoint(
-        plant,
-        plant.GetFrameByName("body"),
-        plant.GetModelInstanceByName("gripper"),
-    )
-    plant.Finalize()
-
-    meshcat.DeleteAddedControls()
-    params = MeshcatVisualizerParams()
-    params.prefix = "planning"
-    visualizer = MeshcatVisualizer.AddToBuilder(
-        builder, scene_graph, meshcat, params
-    )
-
-    cloud = process_point_cloud(
-        environment,
-        environment_context,
-        ["camera0", "camera1", "camera2"],
-        "bin0",
-    )
-    meshcat.SetObject("planning/cloud", cloud, point_size=0.003)
-
-    score = builder.AddSystem(
-        ScoreSystem(internal_model, cloud, plant.GetBodyByName("body").index())
-    )
-    builder.Connect(plant.get_body_poses_output_port(), score.get_input_port())
-
-    lower_limit = [-1, -1, 0, -np.pi, -np.pi / 4.0, -np.pi / 4.0]
-    upper_limit = [1, 1, 1, 0, np.pi / 4.0, np.pi / 4.0]
-    q0 = [-0.05, -0.5, 0.25, -np.pi / 2.0, 0, 0]
-    default_interactive_timeout = None if running_as_notebook else 1.0
-    sliders = builder.AddSystem(
-        JointSliders(
-            meshcat,
-            plant,
-            initial_value=q0,
-            lower_limit=lower_limit,
-            upper_limit=upper_limit,
-            decrement_keycodes=[
-                "KeyQ",
-                "KeyS",
-                "KeyA",
-                "KeyJ",
-                "KeyK",
-                "KeyU",
-            ],
-            increment_keycodes=[
-                "KeyE",
-                "KeyW",
-                "KeyD",
-                "KeyL",
-                "KeyI",
-                "KeyO",
-            ],
-        )
-    )
-    diagram = builder.Build()
-    sliders.Run(diagram, default_interactive_timeout)
-    meshcat.DeleteAddedControls()
 
 
 def draw_grasp_candidate(X_G, prefix="gripper", draw_frames=True):
@@ -1011,6 +925,62 @@ directives:
     
     return plant, diagram
 
+def LoadRobotHardwareStationHardware(builder = None):
+    if not builder:
+        builder = DiagramBuilder()
+    
+    model_directives = """    
+directives:
+- add_directives:
+    file: package://manipulation/two_bins_w_cameras.dmd.yaml
+
+# Add iiwa
+- add_model:
+    name: iiwa
+    file: package://drake/manipulation/models/iiwa_description/urdf/iiwa14_primitive_collision.urdf
+    default_joint_positions:
+        iiwa_joint_1: [0]
+        iiwa_joint_2: [0.3]
+        iiwa_joint_3: [0]
+        iiwa_joint_4: [-1.8]
+        iiwa_joint_5: [0]
+        iiwa_joint_6: [1]
+        iiwa_joint_7: [1.57]
+
+- add_weld:
+    parent: world
+    child: iiwa::base
+
+# Add schunk
+- add_model:
+    name: wsg
+    file: package://drake/manipulation/models/wsg_50_description/sdf/schunk_wsg_50_welded_fingers.sdf
+
+- add_weld:
+    parent: iiwa::iiwa_link_7
+    child: wsg::body
+    X_PC:
+      translation: [0, 0, 0.114]
+      rotation: !Rpy { deg: [90.0, 0.0, 0.0 ]}
+    """
+
+    scenario = load_scenario(data=model_directives)
+    station: IiwaHardwareStationDiagram = builder.AddNamedSystem(
+        "station",
+        IiwaHardwareStationDiagram(
+            scenario=scenario, has_wsg=True, use_hardware=False,
+        ),
+    )
+    
+    plant = station.get_internal_plant("plant")
+
+    robotContext = station.get_internal_plant_context()
+    
+    
+    diagram = builder.Build()
+    
+    return plant, diagram, robotContext
+
 
 
 def GcsTrajOpt(q_start, q_goal):
@@ -1060,7 +1030,7 @@ def GcsTrajOpt(q_start, q_goal):
     for edge in gcs.graph_of_convex_sets().Edges():
         print(result.GetSolution(edge.phi()))
 
-def convertToTraj(oldTraj, startPos = None):
+def convertToTraj(oldTraj, startPos = [None]):
     plantIK, diagramIK = LoadRobotHardwareStation()
     contextIK = diagramIK.CreateDefaultContext()
     plantContextiK = plantIK.GetMyContextFromRoot(contextIK)
@@ -1068,7 +1038,7 @@ def convertToTraj(oldTraj, startPos = None):
     linMoveTrajAng = oldTraj.get_orientation_trajectory()
     X_G = RigidTransform(Quaternion(linMoveTrajAng.value(0)), linMoveTrajPos.value(0))
 
-    if not startPos:
+    if not startPos[0]:
         startPos = MyInverseKinematics(X_G, plantIK, plantContextiK)
     
     trajReturn = []
@@ -1083,6 +1053,36 @@ def convertToTraj(oldTraj, startPos = None):
         startPos = newPos
 
     return trajReturn
+
+def move_down(trajs, dist):
+    plantIK, diagramIk = LoadRobotHardwareStation()
+
+    wsg = plantIK.GetModelInstanceByName("wsg")
+
+    gripper_frame = plantIK.GetBodyByName("body", wsg).body_frame()
+
+    contextIK = diagramIk.CreateDefaultContext()
+    plantContextIK = plantIK.GetMyContextFromRoot(contextIK)
+
+    oldPos = trajs[-1]
+
+    oldPos = oldPos.value(oldPos.end_time())
+
+    plantIK.SetPositions(plantContextIK, oldPos)
+
+    wsgPos = gripper_frame.CalcPoseInWorld(plantContextIK)
+
+    wsgRot = wsgPos.rotation()
+
+    wsgPosOnly = wsgPos.translation()
+
+    endPos = RigidTransform(wsgRot, wsgPosOnly - [0, 0, dist])
+
+    linMoveTraj = PiecewisePose.MakeLinear([0, 1.0], [wsgPos, endPos])
+
+    linMoveTraj = convertToTraj(linMoveTraj, oldPos)
+
+    return linMoveTraj
 
         
 del iris_regions["GraspPos12"]
@@ -1150,9 +1150,14 @@ oldCand = RigidTransform(
 
 gripper = plant.GetModelInstanceByName("wsg")
 context = diagram.CreateDefaultContext()
-plantIK, contextIK = LoadRobotHardwareStation()
+plantIK, diagramIk = LoadRobotHardwareStation()
+
+contextIK = diagramIk.CreateDefaultContext()
 
 jelloUpPos = [-2.28218173, 0.36183194, 0.6409329, -1.87001069, -0.25713113, 0.98730485, -1.4742302 ]
+
+plantContextIK = plantIK.GetMyContextFromRoot(contextIK)
+plantIK.SetPositions(plantContextIK, jelloUpPos)
 
 jelloUpPos[-1] += math.pi/2
 
@@ -1179,14 +1184,7 @@ glassGrab = [-0.95816858, 0.69765876, -0.52798669, -1.61296202, 0.34795992, 1.00
 
 trajs.append(GcsTrajOpt(seeds["Transition"], jelloUpPos))
 
-linMoveTraj = PiecewisePose.MakeLinear([0, 1.0], [newCand1, oldCand])
-
-trajs.append(convertToTraj(linMoveTraj, startPos=jelloUpPos))
- 
-'''
-trajs.append(GcsTrajOpt(seeds["Transition"], jelloUpPos))
-
-trajs.append(GcsTrajOpt(jelloUpPos, jelloGrab))
+trajs.append(move_down(trajs, 0.1))
 
 trajs.append(GcsTrajOpt(jelloUpPos, seeds["Between Bins"]))
 
@@ -1194,7 +1192,7 @@ trajs.append(GcsTrajOpt(seeds["Between Bins"], seeds["Deposit Pos 2"]))
 
 trajs.append(GcsTrajOpt(seeds["Deposit Pos 2"], tideUpPos))
 
-trajs.append(GcsTrajOpt(tideUpPos, tideGrab))
+trajs.append(move_down(trajs, 0.1))
 
 trajs.append(GcsTrajOpt(tideUpPos, seeds["Between Bins"]))
 
@@ -1202,7 +1200,9 @@ trajs.append(GcsTrajOpt(seeds["Between Bins"], seeds["Above Bin 2"]))
 
 trajs.append(GcsTrajOpt(seeds["Above Bin 2"], seeds["Transition"]))
 
-trajs.append(GcsTrajOpt(seeds["Transition"], cupGrab))
+trajs.append(GcsTrajOpt(seeds["Transition"], cupUp)) ###
+
+trajs.append(move_down(trajs, 0.1))
 
 trajs.append(GcsTrajOpt(cupUp, seeds["Between Bins"]))
 
@@ -1212,15 +1212,11 @@ trajs.append(GcsTrajOpt(seeds["Above Bin 2"], seeds["Between Bins"]))
 
 trajs.append(GcsTrajOpt(seeds["Between Bins"], glassUp))
 
-trajs.append(GcsTrajOpt(glassUp, glassGrab))
+trajs.append(move_down(trajs, 0.1))
 
 trajs.append(GcsTrajOpt(glassUpBigger, seeds["Deposit Pos 2 Up"]))
 
 trajs.append(GcsTrajOpt(seeds["Deposit Pos 2 Up"], seeds["Deposit Pos 2"]))
-
-#trajs.append(GcsTrajOpt(seeds["Between Bins"], seeds["Deposit Pos 2"]))
-'''
-
 
 diagram, context, robot, objPos, plant, internalPlantContext = make_environment_model_display(
     trajs, rng=np.random.default_rng(), num_ycb_objects=1, draw=True
