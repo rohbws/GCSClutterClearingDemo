@@ -1,5 +1,6 @@
 import numpy as np
 from pydrake.all import Simulator
+from pydrake.all import *
 from IPython.display import clear_output
 from pydrake.all import BasicVector
 from pydrake.all import (
@@ -17,6 +18,7 @@ from pydrake.all import (
     StartMeshcat,
     UniformlyRandomRotationMatrix,
     PiecewisePose,
+    JacobianWrtVariable,
     Quaternion,
 )
 from manipulation.station import MakeHardwareStation, load_scenario
@@ -95,7 +97,8 @@ class TrajPosOut(LeafSystem):
         self.prevTime = 0
         self.first = True
         self.prevout = [None]
-        self.order = [0, 2, -2, 0, 0, -2, 0, 2, -2, 0, 0, -2, 0, 0, 2, -2, 0, 0, -2, 0, 0, 2, -2, 0,0, -2]
+        self.order = [0, 2, -2, 0, 0, -2, 0, 2, -2, 0, 0, -2, 0, 0, 2, -2, 0, 0, -2, 0, 0, 2,2, -2, 0,0, -2]
+        self.order = [0, -2, 2, -2, 2, -2, 2, -2, 2, -2, 2, -2, 2, -2, 2, -2]
         self.endCondTime = False
         self.startTime = 0
         self.firstRunToStart = True
@@ -115,7 +118,7 @@ class TrajPosOut(LeafSystem):
 
         distToEnd = self.calcDistToEnd(context, endPos)
 
-        print(distToEnd)
+        #print(distToEnd)
 
         if self.incrTrajVal(context, distToEnd):
             self.stackTime = context.get_time()
@@ -125,7 +128,7 @@ class TrajPosOut(LeafSystem):
         dist = np.linalg.norm(startPos - np.array(self.iiwaPos.Eval(context)))
 
         if dist > 0.009 and self.first and self.order[self.outTraj] >= 0:
-            print(dist)
+            #print(dist)
             posVal = np.array(self.runToStart(context, startPos, dist)).flatten()
             output.SetFromVector(posVal)
             self.lastPos = posVal
@@ -215,7 +218,7 @@ class TrajPosOut(LeafSystem):
         targPos = 0
         targPosCoeff = 0.9995
         targPosCoeff = math.atan(100.0*dist) * 2.0 * 0.9995 * 0.3 / math.pi + 0.7
-        print(targPosCoeff)
+        #print(targPosCoeff)
         if not self.lastPos[0]:
             self.prevout = self.iiwaPos.Eval(context)
             self.firstRunToStart = False
@@ -230,14 +233,16 @@ class TrajPosOut(LeafSystem):
         
         newPos = [None]
         if self.order[self.outTraj] == 0:
-            print("test0")
+            #print("test0")
             currTime = context.get_time()
-            coef = 0.25
+            coef = 0.26
 
             if self.outTraj >= 21:
-                coef = 0.15
+                coef = 0.25
             elif self.outTraj in self.fastMoves:
                 coef = 0.35
+
+            coef = 0.2
             newPos = self.traje[self.currTraj].value((currTime - self.stackTime) * coef)
         elif self.order[self.outTraj] == 1:
             linMoveTrajPos = self.traje[self.currTraj].get_position_trajectory()
@@ -247,13 +252,14 @@ class TrajPosOut(LeafSystem):
             newPos = MyInverseKinematics(X_G,self.plantIK, self.contextIK)
             if self.lastPos[0]:
                 newPos = MyInverseKinematics(X_G, self.plantIK, self.contextIK, self.lastPos)
-            print("test1")
+            #print("test1")
         elif self.order[self.outTraj] == 2:
-            moveTime = int((context.get_time() - self.stackTime) * 15)
+            #print("test3")
+            moveTime = int((context.get_time() - self.stackTime)* 30)
             moveTime = min(moveTime, len(self.traje[self.currTraj]) - 1)
             newPos = (self.traje[self.currTraj][moveTime]).copy()
         elif self.order[self.outTraj] < 0:
-            print("test2")
+            #print("test2")
             if not self.lastPos[0]:
                 self.lastPos = self.iiwaPos.Eval(context)
                 return self.iiwaPos.Eval(context)
@@ -270,11 +276,15 @@ class WSGOut(LeafSystem):
         LeafSystem.__init__(self)
         self.DeclareVectorOutputPort("wsg_position", BasicVector(1), self.calciiwaPos)
         self.statusTime = self.DeclareVectorInputPort("statusTime", 1)
-        self.closeTimes = [2, 3, 4, 8, 9, 10, 14, 15, 16, 21, 22, 23]
+        self.closeTimes = [2, 3, 4, 8, 9, 10, 15, 16, 17, 22, 23, 24]
         
     def calciiwaPos(self, context, output):
 
         if self.statusTime.Eval(context)[0] in self.closeTimes:
+            output.SetFromVector([0.0])
+        else:
+            output.SetFromVector([0.3])
+        if self.statusTime.Eval(context)[0] > 1:
             output.SetFromVector([0.0])
         else:
             output.SetFromVector([0.3])
@@ -364,7 +374,7 @@ def make_environment_model_display(
     station: IiwaHardwareStationDiagram = builder.AddNamedSystem(
         "station",
         IiwaHardwareStationDiagram(
-            scenario=scenario, has_wsg=True, use_hardware=False,
+            scenario=scenario, has_wsg=True, use_hardware=True,
         ),
     )
 
@@ -755,65 +765,6 @@ from pydrake.planning import GcsTrajectoryOptimization
 from pydrake.geometry.optimization import Point, GraphOfConvexSetsOptions
 
 
-def PublishPositionTrajectory(
-    trajectorys, root_context, plant, visualizer, context, objPos, obj, diagram, time_step=1.0 / 33.0
-):
-    """
-    Args:
-        trajectory: A Trajectory instance.
-    """
-    plant_context = plant.GetMyContextFromRoot(root_context)
-    outSys = diagram.GetSubsystemByName("iiwa_controller")
-    #visualizer_context = visualizer.GetMyContextFromRoot(root_context)
-
-    #plant.SetPositions(plant_context, gripperI, [-0.055, 0.055])
-    #plant.SetPositions(plant_context, obj, objPos)
-    #plant.SetPositions(plant_context, context, trajectorys[0].value(0))
-    #diagramI.ForcedPublish(root_context)
-    first = 0
-    
-    sim = Simulator(diagram)
-        
-    currTime = 0.05
-    sim.set_target_realtime_rate(0.1)
-    sim.AdvanceTo(2.0)
-
-    #visualizer.StartRecording(True)
-    tOld = 0
-
-    for trajectory in trajectorys:
-
-        for t in np.append(
-            np.arange(trajectory.start_time(), trajectory.end_time(), time_step),
-            trajectory.end_time(),
-        ):
-            #visualizer_context = visualizer.GetMyContextFromRoot(root_context)
-            plant_context = plant.GetMyContextFromRoot(sim.get_context())
-            outContext = outSys.GetMyContextFromRoot(sim.get_context())
-            print(sim.get_context().get_time())
-            print("plant" + str(plant.get_actuation_input_port(robot[0]).Eval(plant_context)))
-            print("out" + str(outPort.Eval(outContext)))
-            print("plantPos" + str(plant.GetPositions(plant_context, robot[0])))
-            
-            currTime = currTime + 0.05
-            sim.AdvanceTo(currTime)
-            
-            #root_context.SetTime(t)
-            #plant.SetPositions(plant_context, context, trajectory.value(t))
-            
-            if first >= 1:
-                continue
-                plant.SetPositions(plant_context, gripperI, [0, 0])
-            
-            #sim.AdvanceTo(0.01)
-            #visualizer.ForcedPublish(visualizer_context)
-            #diagramI.ForcedPublish(root_context)
-            first += 1
-            tOld = t
-
-    #visualizer.StopRecording()
-    #visualizer.PublishRecording()
-
 def LoadRobot(plant: MultibodyPlant) -> Body:
     parser = Parser(plant)
     ConfigureParser(parser)
@@ -1066,7 +1017,10 @@ def move_down(trajs, dist):
 
     oldPos = trajs[-1]
 
-    oldPos = oldPos.value(oldPos.end_time())
+    try:
+        oldPos = oldPos.value(oldPos.end_time())
+    except:
+        oldPos = oldPos[-1]
 
     plantIK.SetPositions(plantContextIK, oldPos)
 
@@ -1078,9 +1032,117 @@ def move_down(trajs, dist):
 
     endPos = RigidTransform(wsgRot, wsgPosOnly - [0, 0, dist])
 
-    linMoveTraj = PiecewisePose.MakeLinear([0, 1.0], [wsgPos, endPos])
+    linMoveTraj = PiecewisePose.MakeLinear([0, (abs(dist * 10))], [wsgPos, endPos])
 
     linMoveTraj = convertToTraj(linMoveTraj, oldPos)
+
+    return linMoveTraj
+
+def move_schunk(trajs, dists):
+    plantIK, diagramIk = LoadRobotHardwareStation()
+
+    wsg = plantIK.GetModelInstanceByName("wsg")
+
+    gripper_frame = plantIK.GetBodyByName("body", wsg).body_frame()
+
+    contextIK = diagramIk.CreateDefaultContext()
+    plantContextIK = plantIK.GetMyContextFromRoot(contextIK)
+
+    oldPos = trajs[-1]
+
+    try:
+        oldPos = oldPos.value(oldPos.end_time())
+    except:
+        oldPos = oldPos[-1]
+
+    plantIK.SetPositions(plantContextIK, oldPos)
+
+    wsgPos = gripper_frame.CalcPoseInWorld(plantContextIK)
+
+    wsgRot = wsgPos.rotation()
+
+    wsgPosOnly = wsgPos.translation()
+
+    endPos = RigidTransform(wsgRot, wsgPosOnly + dists)
+
+    print(endPos)
+
+    linMoveTraj = PiecewisePose.MakeLinear([0, (abs(np.linalg.norm(dists) * 10))], [wsgPos, endPos])
+
+    linMoveTraj = convertToTraj(linMoveTraj, oldPos)
+
+
+    return linMoveTraj
+
+def move_schunkAng(trajs, dists, angs):
+    plantIK, diagramIk = LoadRobotHardwareStation()
+
+    wsg = plantIK.GetModelInstanceByName("wsg")
+
+    gripper_frame = plantIK.GetBodyByName("body", wsg).body_frame()
+
+    contextIK = diagramIk.CreateDefaultContext()
+    plantContextIK = plantIK.GetMyContextFromRoot(contextIK)
+
+    oldPos = trajs[-1]
+
+    try:
+        oldPos = oldPos.value(oldPos.end_time())
+    except:
+        oldPos = oldPos[-1]
+
+    plantIK.SetPositions(plantContextIK, oldPos)
+
+    wsgPos = gripper_frame.CalcPoseInWorld(plantContextIK)
+
+    wsgRot = wsgPos.rotation()
+
+    wsgPosOnly = wsgPos.translation()
+
+    endPos = RigidTransform(RollPitchYaw(angs), wsgPosOnly + dists)
+
+    print(endPos)
+
+    linMoveTraj = PiecewisePose.MakeLinear([0, (abs(np.linalg.norm(dists) * 10))], [wsgPos, endPos])
+
+    linMoveTraj = convertToTraj(linMoveTraj, oldPos)
+
+
+    return linMoveTraj
+
+def move_schunkAngRotMat(trajs, dists, angs):
+    plantIK, diagramIk = LoadRobotHardwareStation()
+
+    wsg = plantIK.GetModelInstanceByName("wsg")
+
+    gripper_frame = plantIK.GetBodyByName("body", wsg).body_frame()
+
+    contextIK = diagramIk.CreateDefaultContext()
+    plantContextIK = plantIK.GetMyContextFromRoot(contextIK)
+
+    oldPos = trajs[-1]
+
+    try:
+        oldPos = oldPos.value(oldPos.end_time())
+    except:
+        oldPos = oldPos[-1]
+
+    plantIK.SetPositions(plantContextIK, oldPos)
+
+    wsgPos = gripper_frame.CalcPoseInWorld(plantContextIK)
+
+    wsgRot = wsgPos.rotation()
+
+    wsgPosOnly = wsgPos.translation()
+
+    endPos = RigidTransform(angs, wsgPosOnly + dists)
+
+    print(endPos)
+
+    linMoveTraj = PiecewisePose.MakeLinear([0, (abs(np.linalg.norm(dists) * 10))], [wsgPos, endPos])
+
+    linMoveTraj = convertToTraj(linMoveTraj, oldPos)
+
 
     return linMoveTraj
 
@@ -1182,6 +1244,7 @@ glassUpBigger = [-0.95816858, 0.30765876, -0.52798669, -1.61296202, 0.34795992, 
 
 glassGrab = [-0.95816858, 0.69765876, -0.52798669, -1.61296202, 0.34795992, 1.00571432, (3.05432619 - (math.pi / 7))]
 
+'''
 trajs.append(GcsTrajOpt(seeds["Transition"], jelloUpPos))
 
 trajs.append(move_down(trajs, 0.1))
@@ -1212,15 +1275,50 @@ trajs.append(GcsTrajOpt(seeds["Above Bin 2"], seeds["Between Bins"]))
 
 trajs.append(GcsTrajOpt(seeds["Between Bins"], glassUp))
 
-trajs.append(move_down(trajs, 0.1))
+trajs.append(move_down(trajs, 0.05))
+
+trajs.append(move_down(trajs, -0.1))
 
 trajs.append(GcsTrajOpt(glassUpBigger, seeds["Deposit Pos 2 Up"]))
 
 trajs.append(GcsTrajOpt(seeds["Deposit Pos 2 Up"], seeds["Deposit Pos 2"]))
+'''
+#trajs.append(GcsTrajOpt(seeds["Transition"], jelloUpPos))
+
+#trajs.append(move_schunk(trajs, [0.05, -0.05, -0.05]))
+
+#trajs.append(move_schunkAng(trajs, [-0.05, 0.05, 0.05], [-1.35, 0, 1.4]))
+
+#trajs.append(move_schunkAng(trajs, [0.05, -0.05, 0.0], [-1.9, 0, 1.1]))
+
+#trajs.append(move_schunkAng(trajs, [-0.1, -0.05, 0], [-1.5, 0.5, 1.4]))
+
+#trajs.append(move_schunkAng(trajs, [-0.05, -0.15, 0.1], [-1.5, 0.5, 1.7]))
+
+#trajs.append(move_schunkAng(trajs, [0.0, 0.0, 0.1], [-1.5, -0.5, 1.4]))
+
+#trajs.append(move_schunkAng(trajs, [0.0, 0.0, 0.1], [-1.5, -0.5, 1.4]))
+
+#trajs.append(move_schunkAng(trajs, [0.1, 0.0, 0], [-1.5, 0.0, 1.8]))
+
+#trajs.append(move_schunkAng(trajs, [0.01, 0.01, -0.015], [-1.34, -0.65, 1.55]))
+
+Rstraight=RotationMatrix([
+    [0.05597484092032722, -0.0010961886872575403, -0.998431577803059],
+    [0.9984194494229444, -0.004988304216565806, 0.055979637682178125],
+    [-0.005041844695051499, -0.9999869575106491, 0.0008152365706108688],
+  ])
+#trajs.append(move_schunkAngRotMat(trajs, [0, 0, -0.05], Rstraight))
+
 
 diagram, context, robot, objPos, plant, internalPlantContext = make_environment_model_display(
     trajs, rng=np.random.default_rng(), num_ycb_objects=1, draw=True
 )
+wsg = plant.GetModelInstanceByName("wsg")
+
+params = DifferentialInverseKinematicsParameters(plant.num_positions(),
+                                                             plant.num_velocities())
+print(np.array(DoDifferentialInverseKinematics(plant, plant.CreateDefaultContext(), [1, 1, 1, 1, 1, 1], plant.GetFrameByName("body", wsg), params).joint_velocities))
 
 simulator = Simulator(diagram)
 simulator.Initialize()
