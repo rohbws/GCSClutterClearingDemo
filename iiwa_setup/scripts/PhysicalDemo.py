@@ -97,8 +97,15 @@ class TrajPosOut(LeafSystem):
         self.prevTime = 0
         self.first = True
         self.prevout = [None]
-        self.order = [0, 2, -2, 0, 0, -2, 0, 2, -2, 0, 0, -2, 0, 0, 2, -2, 0, 0, -2, 0, 0, 2,2, -2, 0,0, -2]
-        self.order = [0, -2, 2, -2, 2, -2, 2, -2, 2, -2, 2, -2, 2, -2, 2, -2]
+        '''
+        trajectory following key:
+        negative - pause for the abs of that number of seconds
+        0 - follow gcs traj
+        1 - follow EE traj
+        2 - follow list of poses
+        3 - move with diff ik
+        '''
+        self.order = [0, 3, -2, 0, 0, -2, 0, 3, -2, 0, 0, -2, 0, 0, 3, -2, 0, 0, -2, 0, 0, 3,2, -2, 0,0, -2]
         self.endCondTime = False
         self.startTime = 0
         self.firstRunToStart = True
@@ -153,6 +160,8 @@ class TrajPosOut(LeafSystem):
                 endPos = MyInverseKinematics(X_G, self.plantIK, self.contextIK, self.lastPos)
         elif self.order[self.outTraj] == 2:
             endPos = (self.traje[self.currTraj][-1]).copy()
+        elif self.order[self.outTraj] == 3:
+            return self.traje[self.currTraj]
         else:
             return self.iiwaPos.Eval(context)
         
@@ -182,6 +191,14 @@ class TrajPosOut(LeafSystem):
     def calcDistToEnd(self, context, endPos):
         if (self.order[self.outTraj] < 0):
             return 50.0
+
+        if self.order[self.outTraj] == 3:
+            plantCont = self.plant.CreateDefaultContext()
+            curPos = self.lastPos.copy()
+            curPos[0] = curPos[0] - 1.57
+            curPos = np.concatenate((curPos, [0,0]))
+            self.plant.SetPositions(plantCont, curPos)
+            return -(endPos[2] - self.plant.GetFrameByName("body", self.gripper).CalcPoseInWorld(plantCont).translation()[2])
         
         return np.linalg.norm(endPos - np.array(self.iiwaPos.Eval(context)))
 
@@ -198,6 +215,7 @@ class TrajPosOut(LeafSystem):
                 self.loadNewEndCondTime()
                 return True
         else:
+            print(distToEnd)
             if (distToEnd < 0.01):
                 self.first = True
                 if (self.outTraj < (len(self.order) - 1)):
@@ -258,6 +276,18 @@ class TrajPosOut(LeafSystem):
             moveTime = int((context.get_time() - self.stackTime)* 30)
             moveTime = min(moveTime, len(self.traje[self.currTraj]) - 1)
             newPos = (self.traje[self.currTraj][moveTime]).copy()
+        elif self.order[self.outTraj] == 3:
+            plantCont = self.plant.CreateDefaultContext()
+            curPos = self.lastPos.copy()
+            curPos[0] = curPos[0] - 1.57
+            curPos = np.concatenate((curPos, [0,0]))
+            self.plant.SetPositions(plantCont, curPos)
+
+            params = DifferentialInverseKinematicsParameters(self.plant.num_positions(),
+                                                             self.plant.num_velocities())
+            newPos = np.array(DoDifferentialInverseKinematics(self.plant, plantCont, [0, 0, 0, 0, 0,-1], self.plant.GetFrameByName("body", self.gripper), params).joint_velocities)[0:7]
+            print(newPos)
+            newPos = np.array(curPos)[0:7] + 0.001 * newPos
         elif self.order[self.outTraj] < 0:
             #print("test2")
             if not self.lastPos[0]:
@@ -1005,7 +1035,7 @@ def convertToTraj(oldTraj, startPos = [None]):
 
     return trajReturn
 
-def move_down(trajs, dist):
+def move_down_finalPose(trajs, dist):
     plantIK, diagramIk = LoadRobotHardwareStation()
 
     wsg = plantIK.GetModelInstanceByName("wsg")
@@ -1016,6 +1046,35 @@ def move_down(trajs, dist):
     plantContextIK = plantIK.GetMyContextFromRoot(contextIK)
 
     oldPos = trajs[-1]
+
+    try:
+        oldPos = oldPos.value(oldPos.end_time())
+    except:
+        oldPos = oldPos[-1]
+
+    plantIK.SetPositions(plantContextIK, oldPos)
+
+    wsgPos = gripper_frame.CalcPoseInWorld(plantContextIK)
+
+    wsgRot = wsgPos.rotation()
+
+    wsgPosOnly = wsgPos.translation()
+
+    endPos = RigidTransform(wsgRot, wsgPosOnly - [0, 0, dist])
+
+    return endPos.translation()
+
+def move_down(trajs, dist):
+    plantIK, diagramIk = LoadRobotHardwareStation()
+
+    wsg = plantIK.GetModelInstanceByName("wsg")
+
+    gripper_frame = plantIK.GetBodyByName("body", wsg).body_frame()
+
+    contextIK = diagramIk.CreateDefaultContext()
+    plantContextIK = plantIK.GetMyContextFromRoot(contextIK)
+
+    oldPos = trajs[-2]
 
     try:
         oldPos = oldPos.value(oldPos.end_time())
@@ -1244,10 +1303,9 @@ glassUpBigger = [-0.95816858, 0.30765876, -0.52798669, -1.61296202, 0.34795992, 
 
 glassGrab = [-0.95816858, 0.69765876, -0.52798669, -1.61296202, 0.34795992, 1.00571432, (3.05432619 - (math.pi / 7))]
 
-'''
 trajs.append(GcsTrajOpt(seeds["Transition"], jelloUpPos))
 
-trajs.append(move_down(trajs, 0.1))
+trajs.append(move_down_finalPose(trajs, 0.1))
 
 trajs.append(GcsTrajOpt(jelloUpPos, seeds["Between Bins"]))
 
@@ -1255,7 +1313,7 @@ trajs.append(GcsTrajOpt(seeds["Between Bins"], seeds["Deposit Pos 2"]))
 
 trajs.append(GcsTrajOpt(seeds["Deposit Pos 2"], tideUpPos))
 
-trajs.append(move_down(trajs, 0.1))
+trajs.append(move_down_finalPose(trajs, 0.1))
 
 trajs.append(GcsTrajOpt(tideUpPos, seeds["Between Bins"]))
 
@@ -1265,7 +1323,7 @@ trajs.append(GcsTrajOpt(seeds["Above Bin 2"], seeds["Transition"]))
 
 trajs.append(GcsTrajOpt(seeds["Transition"], cupUp)) ###
 
-trajs.append(move_down(trajs, 0.1))
+trajs.append(move_down_finalPose(trajs, 0.1))
 
 trajs.append(GcsTrajOpt(cupUp, seeds["Between Bins"]))
 
@@ -1275,15 +1333,13 @@ trajs.append(GcsTrajOpt(seeds["Above Bin 2"], seeds["Between Bins"]))
 
 trajs.append(GcsTrajOpt(seeds["Between Bins"], glassUp))
 
-trajs.append(move_down(trajs, 0.05))
+trajs.append(move_down_finalPose(trajs, 0.05))
 
 trajs.append(move_down(trajs, -0.1))
 
 trajs.append(GcsTrajOpt(glassUpBigger, seeds["Deposit Pos 2 Up"]))
 
 trajs.append(GcsTrajOpt(seeds["Deposit Pos 2 Up"], seeds["Deposit Pos 2"]))
-'''
-#trajs.append(GcsTrajOpt(seeds["Transition"], jelloUpPos))
 
 #trajs.append(move_schunk(trajs, [0.05, -0.05, -0.05]))
 
@@ -1315,10 +1371,6 @@ diagram, context, robot, objPos, plant, internalPlantContext = make_environment_
     trajs, rng=np.random.default_rng(), num_ycb_objects=1, draw=True
 )
 wsg = plant.GetModelInstanceByName("wsg")
-
-params = DifferentialInverseKinematicsParameters(plant.num_positions(),
-                                                             plant.num_velocities())
-print(np.array(DoDifferentialInverseKinematics(plant, plant.CreateDefaultContext(), [1, 1, 1, 1, 1, 1], plant.GetFrameByName("body", wsg), params).joint_velocities))
 
 simulator = Simulator(diagram)
 simulator.Initialize()
