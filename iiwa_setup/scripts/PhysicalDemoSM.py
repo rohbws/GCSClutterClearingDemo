@@ -192,14 +192,22 @@ class TrajPosOut(LeafSystem):
         self.antGrasp = AntipodalGrasps()
 
         self.gcsPlan.addTrajEndPoints(seeds["Transition"], self.antGrasp.getNextGrasp()[0])
-
-        self.intermediates = queue.Queue()
+        self.planNextTraj()
 
         self.firstRun = True
         
                                      
     def getI(self, context, output):
         output.SetFromVector([self.state])
+
+    def calcNextGCS(self):
+        nextGrasp = self.antGrasp.getNextGrasp()
+        graspUp = RigidTransform(nextGrasp.rotation(), nextGrasp.translation() + [0, 0, 0.1])
+        self.gcsPlan.addTrajEndPoints(seeds["Deposit Pos 2"], graspUp)
+        self.gcsPlan.addTrajEndPoints(graspUp, seeds["Deposit Pos 2"])
+        self.planNextTraj()
+        self.planNextTraj()
+
 
     def calciiwaPos(self, context, output):
 
@@ -225,6 +233,9 @@ class TrajPosOut(LeafSystem):
             self.firstRun = False
 
         if self.currTraj.exitConditionReached(context):
+            if self.state == 2 or self.state == 5:
+                self.calcNextGCS()
+            
             self.state = (self.state + 1) % 6
             if self.state == 0 or self.state == 4:
                 self.currTraj = trajOperator(self.plant, self.state, self.gcsPlan.getNextTraj(), context, self.iiwaPos, self.lastPos)
@@ -239,10 +250,10 @@ class TrajPosOut(LeafSystem):
 
 class AntipodalGrasps():
     def __init__(self) -> None:
-        self.graspPoses = queue.Queue()
+        self.graspPoses = []
     
     def getNextGrasp(self):
-        return self.graspPoses.get()
+        return self.graspPoses[0]
     
 
 class GCSPlanner():
