@@ -1,0 +1,28 @@
+{
+    "tests": [
+        {
+            "name": "Test test_set_friction",
+            "score": 0.0,
+            "max_score": 3,
+            "status": "failed",
+            "output": "Test Failed: False is not true : Final block positions are not in the correct range.\n"
+        },
+        {
+            "name": "Test test_set_masses",
+            "score": 0.0,
+            "max_score": 2,
+            "status": "failed",
+            "output": "Test Failed: False is not true : Final block positions are not in the correct range.\n"
+        },
+        {
+            "name": "Test test_set_timestep",
+            "score": 0.0,
+            "max_score": 2,
+            "status": "failed",
+            "output": "Test Failed: False is not true : Final block positions are not in the correct range.\n"
+        }
+    ],
+    "leaderboard": [],
+    "execution_time": "0.00",
+    "score": 0.0
+}
