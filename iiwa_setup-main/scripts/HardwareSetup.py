@@ -19,9 +19,18 @@ from pydrake.multibody.tree import Body
 from pydrake.solvers import Solve
 from pydrake.systems.framework import DiagramBuilder
 
-from manipulation.station import load_scenario
+from manipulation.station import load_scenario, LoadScenario
+
+import warnings
+
 from pydrake.all import DiagramBuilder
-from iiwa_setup.iiwa import IiwaHardwareStationDiagram
+
+try:
+    from iiwa_setup.iiwa import IiwaHardwareStationDiagram
+except:
+    warnings.warn("Could not import hardware functions", UserWarning)
+    
+
 
 
 def xyz_rpy_deg(xyz, rpy_deg):
@@ -29,59 +38,55 @@ def xyz_rpy_deg(xyz, rpy_deg):
     rpy_deg = np.asarray(rpy_deg)
     return RigidTransform(RollPitchYaw(rpy_deg * np.pi / 180), xyz)
 
-def make_environment_model_display(
-    has_wsg = True, hardware = False
+def make_environment_model_hardware(
+    hardware = False, has_wsg = True, traj = None, TrajPosOut = None, WSGOut = None
 ) -> Body:
     # Make one model of the environment, but the robot only gets to see the sensor outputs.
 
     builder = DiagramBuilder()
     
-    
+    obj = None
+
     scenario_data = (
         """
     directives:
     - add_directives:
-        file: package://manipulation/two_bins.dmd.yaml
-    - add_directives:
         file: package://manipulation/iiwa_and_wsg.dmd.yaml
     plant_config:
         time_step: 0.005
-        contact_model: "hydroelastic"
-        discrete_contact_solver: "sap"
+        contact_model: "hydroelastic_with_fallback"
+        discrete_contact_approximation: "sap"
     model_drivers:
         iiwa: !IiwaDriver
+            lcm_bus: "default"
             hand_model_name: wsg
+            control_mode: position_only
         wsg: !SchunkWsgDriver {}
+    lcm_buses:
+        default:
+            lcm_url: ""
     """
-        if has_wsg
-        else """
-    directives:
-    - add_directives:
-        file: package://iiwa_setup/iiwa7.dmd.yaml
-    plant_config:
-        # For some reason, this requires a small timestep
-        time_step: 0.0001
-        contact_model: "hydroelastic"
-        discrete_contact_solver: "sap"
-    model_drivers:
-        iiwa: !IiwaDriver {}
-            
-    """)
+    )
 
-    scenario = load_scenario(data=scenario_data)
+    builder = DiagramBuilder()
 
+    scenario = LoadScenario(data=scenario_data)
     station: IiwaHardwareStationDiagram = builder.AddNamedSystem(
         "station",
         IiwaHardwareStationDiagram(
-            scenario=scenario, has_wsg=True, use_hardware=hardware,
+            scenario=scenario, has_wsg=has_wsg, use_hardware=hardware
         ),
     )
+
     
     plant = station.get_internal_plant()
     
     scene_graph = station.GetSubsystemByName("external_station").GetSubsystemByName("scene_graph")
     
     robot = plant.GetModelInstanceByName("iiwa")
+
+    #gripper = plant.GetModelInstanceByName("gripper")
+    #end_effector_body = plant.GetBodyByName("body", gripper)
        
     AddRgbdSensors(builder, plant, scene_graph)
     
@@ -143,29 +148,133 @@ def MyInverseKinematics(X_WE,plant, context, plantPos = [None]):
 
     return result.GetSolution(q)
 
-def LoadRobotHardwareStation(builder = None):
+def LoadRobotIRIS(builder = None):
+
+    import os
+
+    binPath = os.path.abspath("bin.sdf")
+    uri = "file://{}".format(binPath)
+    print(uri)
+    print(binPath)
     if not builder:
-        builder = DiagramBuilder()
+        builder = RobotDiagramBuilder()
     
     model_directives = (
-        """
-    directives:
-    - add_directives:
-        file: package://manipulation/two_bins.dmd.yaml
-    - add_directives:
-        file: package://manipulation/iiwa_and_wsg.dmd.yaml
-    plant_config:
-        time_step: 0.005
-        contact_model: "hydroelastic"
-        discrete_contact_solver: "sap"
-    model_drivers:
-        iiwa: !IiwaDriver
-            hand_model_name: wsg
-        wsg: !SchunkWsgDriver {}
-            
+        """    
+directives:
+
+- add_model:
+    name: bin0
+    file: file:///home/rohanbosworth/manipulation/manipulation/models/hydro/bin.sdf
+
+- add_weld:
+    parent: world
+    child: bin0::bin_base
+    X_PC:
+      rotation: !Rpy { deg: [0.0, 0.0, 90.0 ]}
+      translation: [-0.05, -0.5, -0.015]
+
+- add_model:
+    name: bin1
+    file: file:///home/rohanbosworth/manipulation/manipulation/models/hydro/bin.sdf
+
+- add_weld:
+    parent: world
+    child: bin1::bin_base
+    X_PC:
+      rotation: !Rpy { deg: [0.0, 0.0, 180.0 ]}
+      translation: [0.5, 0.05, -0.015]
+
+- add_model:
+    name: floor
+    file: file:///home/rohanbosworth/manipulation/manipulation/models/floor.sdf
+
+- add_weld:
+    parent: world
+    child: floor::box
+    X_PC:
+        translation: [0, 0, -.5]
+
+# Add iiwa
+- add_model:
+    name: iiwa
+    file: package://drake_models/iiwa_description/urdf/iiwa14_primitive_collision.urdf
+    default_joint_positions:
+        iiwa_joint_1: [0]
+        iiwa_joint_2: [0.3]
+        iiwa_joint_3: [0]
+        iiwa_joint_4: [-1.8]
+        iiwa_joint_5: [0]
+        iiwa_joint_6: [1]
+        iiwa_joint_7: [1.57]
+
+- add_weld:
+    parent: world
+    child: iiwa::base
+
+# Add schunk
+- add_model:
+    name: wsg
+    file: package://drake_models/wsg_50_description/sdf/schunk_wsg_50_welded_fingers.sdf
+
+- add_weld:
+    parent: iiwa::iiwa_link_7
+    child: wsg::body
+    X_PC:
+      translation: [0, 0, 0.114]
+      rotation: !Rpy { deg: [90.0, 0.0, 0.0 ]}
     """)
 
-    scenario = load_scenario(data=model_directives)
+    scenario = LoadScenario(data=model_directives)
+    robot_model_instances = builder.parser().AddModelsFromString(model_directives, ".dmd.yaml")
+    
+    plant = builder.plant()
+    
+    diagram = builder.Build()
+    
+    return plant, robot_model_instances, diagram
+
+def LoadRobotHardwareStation(builder = None):
+    if not builder:
+        builder = RobotDiagramBuilder()
+    
+    model_directives = (
+        """    
+directives:
+- add_directives:
+    file: package://manipulation/two_bins.dmd.yaml
+
+# Add iiwa
+- add_model:
+    name: iiwa
+    file: package://drake_models/iiwa_description/urdf/iiwa14_primitive_collision.urdf
+    default_joint_positions:
+        iiwa_joint_1: [0]
+        iiwa_joint_2: [0.3]
+        iiwa_joint_3: [0]
+        iiwa_joint_4: [-1.8]
+        iiwa_joint_5: [0]
+        iiwa_joint_6: [1]
+        iiwa_joint_7: [1.57]
+
+- add_weld:
+    parent: world
+    child: iiwa::base
+
+# Add schunk
+- add_model:
+    name: wsg
+    file: package://drake_models/wsg_50_description/sdf/schunk_wsg_50_welded_fingers.sdf
+
+- add_weld:
+    parent: iiwa::iiwa_link_7
+    child: wsg::body
+    X_PC:
+      translation: [0, 0, 0.114]
+      rotation: !Rpy { deg: [90.0, 0.0, 0.0 ]}
+    """)
+
+    scenario = LoadScenario(data=model_directives)
     station = builder.AddSystem(MakeHardwareStation(scenario))
     
     plant = station.GetSubsystemByName("plant")
@@ -181,7 +290,7 @@ def LoadRobotHardwareStationHardware(builder = None):
     model_directives = """    
 directives:
 - add_directives:
-    file: package://manipulation/two_bins_w_cameras.dmd.yaml
+    file: package://manipulation/two_bins.dmd.yaml
 
 # Add iiwa
 - add_model:

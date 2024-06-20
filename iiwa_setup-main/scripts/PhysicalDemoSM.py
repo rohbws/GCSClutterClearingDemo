@@ -1,5 +1,5 @@
 import numpy as np
-from pydrake.all import Simulator
+from pydrake.all import Simulator, IrisInConfigurationSpaceFromCliqueCover
 from pydrake.all import *
 import queue
 from pydrake.all import BasicVector
@@ -27,6 +27,7 @@ from forward_kinematics import forward_kinematics, IiwaForwardKinematics
 
 from HardwareSetup import *
 
+
 iris_filename = "my_iris.yaml"
 iris_regions = dict()
 q = []
@@ -53,7 +54,7 @@ class trajOperator():
         self.firstCall = True
         self.startReached = False
         self.stackTime = context.get_time()
-        self.lastPos = lastP
+        self.lastPos = self.getiiwaPos(context)
 
     # This method returns the current position of the robot.
     def getiiwaPos(self, context):
@@ -93,6 +94,7 @@ class trajOperator():
 
         if self.type == 0 or self.type == 4:
             newPos = np.array(self.traj.value((context.get_time() - self.stackTime) * 0.2)).flatten()
+            newPos[0] = newPos[0] + 1.57
         elif self.type == 1:
             plantCont = self.plant.CreateDefaultContext()
             curPos = self.lastPos.copy()
@@ -131,28 +133,63 @@ class trajOperator():
     def getRunStartPos(self, context):
         if self.runToStartRequried():
             if self.type == 0 or self.type == 4:
-                return np.array(self.traj.value(0)).flatten()
+                returnVal = np.array(self.traj.value(0)).flatten()
+                returnVal[0] += 1.57
+                return returnVal
             else:
                 raise TypeError("Run to start not required for this stage")
             
     def exitConditionReached(self, context, exitThresh = 0.01) -> bool:
         if self.type == 0 or self.type == 4:
             endPos = np.array(self.traj.value(self.traj.end_time())).flatten()
+            endPos[0] += 1.57
             return np.linalg.norm(endPos - self.lastPos) < exitThresh
         elif self.type == 1:
             plantCont = self.plant.CreateDefaultContext()
             self.plant.SetPositions(plantCont, np.concatenate((self.lastPos,[0,0])))
             endPos = self.plant.GetFrameByName("body", self.gripper).CalcPoseInWorld(plantCont).translation()
-            print(endPos[2] - self.startEE[2] + self.traj[0])
+            #print(endPos[2] - self.startEE[2] + self.traj[0])
             return (endPos[2] - self.startEE[2] + self.traj[0]) < 0
         elif self.type == 3:
             plantCont = self.plant.CreateDefaultContext()
             self.plant.SetPositions(plantCont, np.concatenate((self.lastPos,[0,0])))
             endPos = self.plant.GetFrameByName("body", self.gripper).CalcPoseInWorld(plantCont).translation()
-            print((endPos[2] - self.startEE[2] - self.traj[0]) )
+            #print((endPos[2] - self.startEE[2] - self.traj[0]) )
             return (endPos[2] - self.startEE[2] - self.traj[0]) > 0
         elif self.type == 2 or self.type == 5:
             return context.get_time() - self.stackTime - self.traj[0] > 0
+        elif self.type == 5.5:
+            return not (trajsEmpty(self.traj[0]))
+
+        
+def planNextTraj(trajInps, gcsTrajs, planner):
+        nextTraj = trajInps.get()
+        gcsTrajs.put(planner.GcsTrajOpt(nextTraj[0], nextTraj[1]))
+
+from pydrake.trajectories import BezierCurve, CompositeTrajectory
+
+def getNextTraj(gcstrajs):
+        if gcstrajs.empty():
+            return None
+        else:
+            nextTraj = gcstrajs.get()
+            for i in range(len(nextTraj)):
+                nextTraj[i] = BezierCurve(nextTraj[i][0], nextTraj[i][1], nextTraj[i][2])
+            return CompositeTrajectory(nextTraj)
+        
+def trajsEmpty(gcstrajs):
+    return gcstrajs.empty()
+        
+def planTrajs(trajInps, gcsTrajs, planner):
+    while True:
+        if trajInps.empty():
+            print("Waiting for next traj inps")
+            time.sleep(0.1)
+        else:
+            print("planning!")
+            planNextTraj(trajInps, gcsTrajs, planner)
+
+import multiprocessing
 
 class TrajPosOut(LeafSystem):
 
@@ -174,17 +211,36 @@ class TrajPosOut(LeafSystem):
         self.gcsPlan = GCSPlanner()
         self.antGrasp = AntipodalGrasps()
 
-        self.gcsPlan.addTrajEndPoints(seeds["Transition"], self.antGrasp.getNextGrasp())
+        manager = multiprocessing.Manager()
+        # Create a shared queue
+        self.gcsTrajs = manager.Queue()
 
-        self.gcsPlan.planNextTraj()
+        self.trajInps = manager.Queue()
 
-        self.intermediates = queue.Queue()
+        #initialize parallel process that runs self.gcsPlan.planNextTraj() in the background
+        self.backPlanning = multiprocessing.Process(target=planTrajs, args=(self.trajInps, self.gcsTrajs, self.gcsPlan))
+
+        self.backPlanning.daemon = True
+
+        self.trajInps.put([seeds["Transition"], self.antGrasp.getNextGrasp()])
+        self.trajInps.put([seeds["Above Bin 1"], seeds["Above Bin 2"]])
+        self.trajInps.put([seeds["Transition"], self.antGrasp.getNextGrasp()])
+        self.trajInps.put([seeds["Above Bin 1"], seeds["Above Bin 2"]])
+        self.trajInps.put([["Transition"], self.antGrasp.getNextGrasp()])
+        self.trajInps.put([seeds["Above Bin 1"], seeds["Above Bin 2"]])
+
+        self.currTraj = None
 
         self.firstRun = True
+
+        self.depRun = None
         
                                      
     def getI(self, context, output):
-        output.SetFromVector([self.state])
+        if self.state == 5.5:
+            output.SetFromVector([self.prevState])
+        else:
+            output.SetFromVector([self.state])
 
     def calciiwaPos(self, context, output):
 
@@ -196,6 +252,7 @@ class TrajPosOut(LeafSystem):
         3 - executing diff ik up
         4 - running to bin (gcs)
         5 - pausing to deposit
+        5.5 - Awaiting new traj
 
 
         Within each execution:
@@ -205,30 +262,64 @@ class TrajPosOut(LeafSystem):
         - - determined purely based on context (time or position)
         repeat
         '''
+        if not self.lastPos[0]:
+            self.lastPos = self.iiwaPos.Eval(context)
+
         if self.firstRun:
-            self.currTraj = trajOperator(self.plant, self.state, self.gcsPlan.getNextTraj(), context, self.iiwaPos, self.lastPos)
+            self.backPlanning.start()
+        
             self.firstRun = False
-        
-        output.SetFromVector(self.currTraj.getOutputPos(context))
 
-        if self.currTraj.exitConditionReached(context):
-            self.lastPos = self.currTraj.lastPos
-            self.state = (self.state + 1) % 6
-            if self.state == 0 or self.state == 4:
-                self.currTraj = trajOperator(self.plant, self.state, self.gcsPlan.getNextTraj(), context, self.iiwaPos, self.lastPos)
-            elif self.state == 1 or self.state == 3:
-                self.currTraj = trajOperator(self.plant, self.state, [0.1], context, self.iiwaPos, self.lastPos)
+        if self.currTraj is None:
+            output.SetFromVector(self.lastPos)
+            newTraj = getNextTraj(self.gcsTrajs)
+            if newTraj is None:
+                self.currTraj = None
             else:
-                self.currTraj = trajOperator(self.plant, self.state, [2], context, self.iiwaPos, self.lastPos)
-            self.outTraj += 1
+                self.currTraj = trajOperator(self.plant, self.state, newTraj, context, self.iiwaPos, self.lastPos)
+        else:
+            outPos = self.currTraj.getOutputPos(context)
+                
+            output.SetFromVector(outPos)
+
+            self.lastPos = outPos
+            
+
+            if self.currTraj.exitConditionReached(context):
+                self.lastPos = self.currTraj.lastPos 
+
+                if self.state == 5.5:
+                    self.state = self.prevState
+                else:
+                    self.state = (self.state + 1) % 6
+
+                print("State " + str(self.state))
+                if self.state == 0 or self.state == 4:
+                    newTraj = getNextTraj(self.gcsTrajs)
+                    if newTraj is None:
+                        self.prevState = self.state
+                        self.state = 5.5
+                        self.currTraj = trajOperator(self.plant, self.state, [self.gcsTrajs], context, self.iiwaPos, self.lastPos)
+                    else:
+                        self.currTraj = trajOperator(self.plant, self.state, newTraj, context, self.iiwaPos, self.lastPos)
+                elif self.state == 1 or self.state == 3:
+                    self.currTraj = trajOperator(self.plant, self.state, [0.1], context, self.iiwaPos, self.lastPos)
+                else:
+                    self.currTraj = trajOperator(self.plant, self.state, [2], context, self.iiwaPos, self.lastPos)
+                self.outTraj += 1
 
         
+#First grasp: GraspPos0
+#Second grasp: GraspPos27
 
 
 class AntipodalGrasps():
     def __init__(self) -> None:
         self.graspPoses = queue.Queue()
         self.graspPoses.put([-2.28218173, 0.36183194, 0.6409329, -1.87001069, -0.25713113, 0.98730485, 0.0965661])
+        self.graspPoses.put([-2.0033341, 0.57914925, 0.61913132, -1.56970203, -0.36290568, 1.10890311,0.0965661])
+        self.graspPoses.put([-2.28218173, 0.36183194, 0.6409329, -1.87001069, -0.25713113, 0.98730485, 0.0965661])
+        self.graspPoses.put([-2.0033341, 0.57914925, 0.61913132, -1.56970203, -0.36290568, 1.10890311,0.0965661])
     
     def getNextGrasp(self):
         return self.graspPoses.get()
@@ -236,14 +327,20 @@ class AntipodalGrasps():
 
 class GCSPlanner():
     def __init__(self):
-        self.plant, diagram = LoadRobotHardwareStation()
+        self.plant, diagram = LoadRobotIRIS()
         self.plant_context = self.plant.CreateDefaultContext()
-        self.trajs = queue.Queue()
-        self.trajInps = queue.Queue()
+        #self.trajs = queue.Queue()
+        #self.trajInps = queue.Queue()
         iris_filename = "my_iris.yaml"
+        self.grasPosRegs = [['GraspPos1', 'GraspPos11', 'GraspPos14', 'GraspPos16', 'GraspPos25', 'GraspPos26', 'GraspPos27', 'GraspPos6'], ['GraspPos1', 'GraspPos11', 'GraspPos14', 'GraspPos16', 'GraspPos25', 'GraspPos26', 'GraspPos27', 'GraspPos6'], ['GraspPos1', 'GraspPos11', 'GraspPos14', 'GraspPos16', 'GraspPos25', 'GraspPos0', 'GraspPos6'], ['GraspPos1', 'GraspPos11', 'GraspPos14', 'GraspPos16', 'GraspPos25', 'GraspPos26', 'GraspPos27', 'GraspPos6'], ['GraspPos1', 'GraspPos11', 'GraspPos14', 'GraspPos16', 'GraspPos25', 'GraspPos26', 'GraspPos27', 'GraspPos6'], ['GraspPos1', 'GraspPos11', 'GraspPos14', 'GraspPos16', 'GraspPos25', 'GraspPos26', 'GraspPos27', 'GraspPos6'], ['GraspPos1', 'GraspPos11', 'GraspPos14', 'GraspPos16', 'GraspPos25', 'GraspPos0', 'GraspPos6'], ['GraspPos1', 'GraspPos11', 'GraspPos14', 'GraspPos16', 'GraspPos25', 'GraspPos26', 'GraspPos27', 'GraspPos6']]
         self.iris_regions = dict()
         self.iris_regions.update(LoadIrisRegionsYamlFile(iris_filename))
-        self.pruneRegions()
+        self.iter = 0
+        #self.pruneRegions()
+
+    def pruneSelectRegions(self, names):
+        for name in names:
+            del self.iris_regions[name]
 
     def pruneRegions(self):
         del self.iris_regions["GraspPos12"]
@@ -276,6 +373,10 @@ class GCSPlanner():
         self.trajInps.put([start, end])
 
     def GcsTrajOpt(self, q_start, q_goal):
+        self.iris_regions = dict()
+        self.iris_regions.update(LoadIrisRegionsYamlFile(iris_filename))
+        #self.pruneRegions()
+        self.iter += 1
         if not self.iris_regions:
             print(
                 "No IRIS regions loaded. Make some IRIS regions then come back and try this again."
@@ -293,7 +394,8 @@ class GCSPlanner():
         edges.append(gcs.AddEdges(source, regions))
         edges.append(gcs.AddEdges(regions, target))
         
-        gcs.AddTimeCost()
+        gcs.AddTimeCost(weight=0.5)
+        gcs.AddPathLengthCost()
         gcs.AddVelocityBounds(
             self.plant.GetVelocityLowerLimits(), (self.plant.GetVelocityUpperLimits())
         )
@@ -309,32 +411,30 @@ class GCSPlanner():
             print("Could not find a feasible path from q_start to q_goal")
             return
         
-        return traj
-
-    def planNextTraj(self):
-        nextTraj = self.trajInps.get()
-        self.trajs.put(self.GcsTrajOpt(nextTraj[0], nextTraj[1]))
-
-    def getNextTraj(self):
-        return self.trajs.get()
+        trajList = []
+        
+        for i in range(traj.get_number_of_segments()):
+            trajTemp = traj.segment(i)
+            trajList.append([trajTemp.start_time(), trajTemp.end_time(), trajTemp.control_points()])
+        
+        return trajList
 
 class WSGOut(LeafSystem):
     def __init__(self, plant):
         LeafSystem.__init__(self)
         self.DeclareVectorOutputPort("wsg_position", BasicVector(1), self.calciiwaPos)
         self.statusTime = self.DeclareVectorInputPort("statusTime", 1)
-        self.closeTimes = [2, 3, 4, 8, 9, 10, 15, 16, 17, 22, 23, 24]
+        self.closeTimes = [2., 3., 4.]
         
     def calciiwaPos(self, context, output):
 
-        if self.statusTime.Eval(context)[0] in self.closeTimes:
+        #print(self.statusTime.Eval(context))
+
+        if self.statusTime.Eval(context)[0]  == 2.0 or self.statusTime.Eval(context)[0]  == 3.0 or self.statusTime.Eval(context)[0]  == 4.0:
             output.SetFromVector([0.0])
         else:
             output.SetFromVector([0.3])
-        if self.statusTime.Eval(context)[0] > 1:
-            output.SetFromVector([0.0])
-        else:
-            output.SetFromVector([0.3])
+        
     
 
 # Note: The order of the seeds matters when we are using existing regions as
@@ -353,8 +453,8 @@ seeds["Transition"] = [-0.75, -0.61, 0, -1.8, 0, 1, 1.57]
 
 seeds["Between Bins"] = [-0.785, 0.2, 0, -1.8, 0, 1, 1.57]        
 
-diagram, context, robot, plant, internalPlantContext = make_environment_model_display(
-    rng=np.random.default_rng(), num_ycb_objects=1, draw=True
+diagram, context, robot, plant, internalPlantContext = make_environment_model_hardware(
+    hardware=True, TrajPosOut=TrajPosOut, WSGOut=WSGOut
 )
 wsg = plant.GetModelInstanceByName("wsg")
 

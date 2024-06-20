@@ -8,7 +8,7 @@ from pydrake.all import (
 )
 import pydrake.planning as plan
 
-plant, diagram = HS.LoadRobotHardwareStation()
+plant, diagram = HS.LoadRobotIRIS()
 
 def get_regions():
     params = dict(edge_step_size=0.125)

@@ -21,7 +21,7 @@ from pydrake.all import (
     JacobianWrtVariable,
     Quaternion,
 )
-from manipulation.station import MakeHardwareStation, load_scenario
+from manipulation.station import MakeHardwareStation, load_scenario, LoadScenario
 from manipulation import running_as_notebook
 from manipulation.scenarios import AddFloatingRpyJoint, AddRgbdSensors, ycb
 from manipulation.utils import ConfigureParser
@@ -80,12 +80,12 @@ def xyz_rpy_deg(xyz, rpy_deg):
 class TrajPosOut(LeafSystem):
     def __init__(self, plant, traj, plant_context):
         LeafSystem.__init__(self)
-        self.traje = traj
+        self.traje = np.array(traj)
         self.plant = plant
         self.plant_context = plant_context
         self.gripper = self.plant.GetModelInstanceByName("wsg")
 
-        self.plantIK, self.contextIK = LoadRobotHardwareStation()
+        #self.plantIK, self.contextIK = LoadRobotHardwareStation()
 
         self.iiwaPos = self.DeclareVectorInputPort("iiwa_measured", BasicVector(7))
         
@@ -110,6 +110,7 @@ class TrajPosOut(LeafSystem):
         self.startTime = 0
         self.firstRunToStart = True
         self.lastPos = [None]
+        self.time = 0
 
         self.fastMoves = [3, 4, 9, 10, 15, 16]
                                      
@@ -134,6 +135,9 @@ class TrajPosOut(LeafSystem):
 
         dist = np.linalg.norm(startPos - np.array(self.iiwaPos.Eval(context)))
 
+        if (self.lastPos[0]):
+            dist = np.linalg.norm(self.lastPos - startPos)
+
         if dist > 0.009 and self.first and self.order[self.outTraj] >= 0:
             #print(dist)
             posVal = np.array(self.runToStart(context, startPos, dist)).flatten()
@@ -151,6 +155,8 @@ class TrajPosOut(LeafSystem):
         endPos = [0]
         
         endPos = self.traje[self.currTraj][-1]
+
+        endPos = endPos.copy()
         
         endPos[0] = endPos[0] + 1.57
         return endPos
@@ -159,6 +165,8 @@ class TrajPosOut(LeafSystem):
         startPos = [0]
         
         startPos = self.traje[self.currTraj][0]
+
+        startPos = startPos.copy()
         
         startPos[0] = startPos[0] + 1.57
         return startPos
@@ -169,7 +177,8 @@ class TrajPosOut(LeafSystem):
         return np.linalg.norm(endPos - np.array(self.iiwaPos.Eval(context)))
 
     def incrTrajVal(self, context, distToEnd):
-            if (distToEnd < 0.01):
+            if (distToEnd < 0.01) or self.time >=1.0:
+                self.time = 0
                 self.first = True
                 if (self.outTraj < (len(self.order) - 1)):
                     self.currTraj += 1
@@ -189,13 +198,12 @@ class TrajPosOut(LeafSystem):
         targPos = 0
         targPosCoeff = 0.9995
         targPosCoeff = math.atan(100.0*dist) * 2.0 * 0.9995 * 0.3 / math.pi + 0.7
-        #print(targPosCoeff)
         if not self.lastPos[0]:
             self.prevout = self.iiwaPos.Eval(context)
             self.firstRunToStart = False
-            targPos = targPosCoeff * np.array(self.prevout) + (1-targPosCoeff) * startPos
+            targPos = targPosCoeff * np.array(self.prevout) + (1-targPosCoeff) * np.array(startPos)
         else:
-            targPos = targPosCoeff * np.array(self.lastPos) + (1-targPosCoeff) * startPos
+            targPos = targPosCoeff * np.array(self.lastPos) + (1-targPosCoeff) * np.array(startPos)
         self.prevout = targPos
         return targPos
         
@@ -203,9 +211,14 @@ class TrajPosOut(LeafSystem):
     def determinePoseVal(self, context):
         
         newPos = [None]
-        t = ((currTime - self.stackTime) * 0.1)
+        currTime = context.get_time()
+
+        t = ((currTime - self.stackTime) * 0.25)
+        t = min(t, 1.0)
+
+        self.time = t
         
-        newPos = ((1-t)**3) * P0 + 3 * t * ((1-t)**2) * P1 + 3 * (t**2) * (1-t) * P2 + (t**3) * P3
+        newPos = ((1-t)**3) * self.traje[self.currTraj][0] + 3 * t * ((1-t)**2) * self.traje[self.currTraj][1] + 3 * (t**2) * (1-t) * self.traje[self.currTraj][2] + (t**3) * self.traje[self.currTraj][3]
         
         newPos[0] = newPos[0] + 1.57
 
@@ -238,24 +251,7 @@ def make_environment_model_display(
     builder = DiagramBuilder()
     
     obj = None
-    
-    '''
-    for i in range(num_ycb_objects):
-        object_num = rng.integers(len(ycb))
-        obj = parser.AddModelsFromUrl(
-            f"package://manipulation/hydro/{ycb[object_num]}"
-        )
-    parser.package_map().AddRemote(
-        package_name="gcs",
-        params=PackageMap.RemoteParams(
-            urls=[
-                f"https://github.com/mpetersen94/gcs/archive/refs/tags/arxiv_paper_version.tar.gz"
-            ],
-            sha256=("6dd5e841c8228561b6d622f592359c36517cd3c3d5e1d3e04df74b2f5435680c"),
-            strip_prefix="gcs-arxiv_paper_version",
-        ),
-    )
-    '''
+
     scenario_data = (
         """
     directives:
@@ -263,12 +259,17 @@ def make_environment_model_display(
         file: package://manipulation/iiwa_and_wsg.dmd.yaml
     plant_config:
         time_step: 0.005
-        contact_model: "hydroelastic"
-        discrete_contact_solver: "sap"
+        contact_model: "hydroelastic_with_fallback"
+        discrete_contact_approximation: "sap"
     model_drivers:
         iiwa: !IiwaDriver
+            lcm_bus: "default"
             hand_model_name: wsg
+            control_mode: position_only
         wsg: !SchunkWsgDriver {}
+    lcm_buses:
+        default:
+            lcm_url: ""
     """
         if has_wsg
         else """
@@ -279,43 +280,24 @@ def make_environment_model_display(
         # For some reason, this requires a small timestep
         time_step: 0.0001
         contact_model: "hydroelastic"
-        discrete_contact_solver: "sap"
-    model_drivers:
-        iiwa: !IiwaDriver {}
-    """
-    )
-    model_directives = """    
-    directives:
-
-    - add_directives:
-        file: package://manipulation/clutter.dmd.yaml
-        
-    - add_model:
-        name: foam_brick1
-        file: package://manipulation/hydro/061_foam_brick.sdf
-        default_free_body_pose:
-            base_link:
-                translation: [-0.17, -0.6, 0.05]
-    - add_model:
-        name: foam_brick2
-        file: package://manipulation/hydro/061_foam_brick.sdf
-        default_free_body_pose:
-            base_link:
-                translation: [-0.18, -0.5, 0.05]
-            
-        
+        discrete_contact_approximation: "sap"
     model_drivers:
         iiwa: !IiwaDriver
-        hand_model_name: wsg
-        wsg: !SchunkWsgDriver {}
+            lcm_bus: "default"
+            control_mode: position_only
+    lcm_buses:
+        default:
+            lcm_url: ""
     """
+    )
 
-    scenario = load_scenario(data=scenario_data)
+    builder = DiagramBuilder()
 
+    scenario = LoadScenario(data=scenario_data)
     station: IiwaHardwareStationDiagram = builder.AddNamedSystem(
         "station",
         IiwaHardwareStationDiagram(
-            scenario=scenario, has_wsg=True, use_hardware=True,
+            scenario=scenario, has_wsg=has_wsg, use_hardware=True
         ),
     )
 
@@ -1116,35 +1098,7 @@ def move_schunkAngRotMat(trajs, dists, angs):
 
     return linMoveTraj
 
-        
-del iris_regions["GraspPos12"]
-del iris_regions["GraspPos13"]
-del iris_regions["GraspPos17"]
-del iris_regions["GraspPos2"]
-del iris_regions["GraspPos22"]
-del iris_regions["GraspPos24"]
 
-
-#The below regions have never been utilized in an antipodal grasp
-del iris_regions["GraspPos10"]
-del iris_regions["GraspPos18"]
-del iris_regions["GraspPos19"]
-del iris_regions["GraspPos20"]
-del iris_regions["GraspPos21"]
-del iris_regions["GraspPos3"]
-del iris_regions["GraspPos4"]
-del iris_regions["GraspPos5"]
-#del iris_regions["GraspPos6"]
-del iris_regions["GraspPos7"]
-del iris_regions["GraspPos8"]
-del iris_regions["GraspPos9"]
-del iris_regions["GraspPos15"]
-del iris_regions["Transition"]
-del iris_regions["TransitionNoObs"]
-del iris_regions["TransitionNoObs2"]
-
-
-#meshcat.Delete()
 
 if (False):
     with open('trajs.pickle', 'rb') as f:
@@ -1156,132 +1110,28 @@ assert (
     seeds
 ), "The examples here use the 'manually-specified seeds' from the  section above. Please run that section first, or populate your own start and end configurations."
 
-diagram, context, robot, objPos, plant, internalPlantContext = make_environment_model_display(
-    trajs, rng=np.random.default_rng(), num_ycb_objects=1, draw=True
-)
-
-newCand1 = RigidTransform(
- R=RotationMatrix([
-   [0.05565567547520678, -0.0002444713294406653, -0.9984499917477929],
-   [0.998439517819967, -0.004573334192722878, 0.05565621142149002],
-   [-0.00457985183498183, -0.9999895123690703, -1.0442167382385126e-05],
- ]),
- p=[-0.08398625420868182, -0.44822613274600115, 0.33908292428232244],
-)
-
-
-oldCand = RigidTransform(
- R=RotationMatrix([
-   [0.05565567547520678, -0.0002444713294406653, -0.9984499917477929],
-   [0.998439517819967, -0.004573334192722878, 0.05565621142149002],
-   [-0.00457985183498183, -0.9999895123690703, -1.0442167382385126e-05],
- ]),
- p=[-0.08398625420868182, -0.44822613274600115, 0.23908292428232244],
-)
-
-
-gripper = plant.GetModelInstanceByName("wsg")
-context = diagram.CreateDefaultContext()
-plantIK, diagramIk = LoadRobotHardwareStation()
-
-contextIK = diagramIk.CreateDefaultContext()
 
 jelloUpPos = [-2.28218173, 0.36183194, 0.6409329, -1.87001069, -0.25713113, 0.98730485, -1.4742302 ]
 
-plantContextIK = plantIK.GetMyContextFromRoot(contextIK)
-plantIK.SetPositions(plantContextIK, jelloUpPos)
-
 jelloUpPos[-1] += math.pi/2
 
-jelloGrab = [-2.20756227, 0.53526387, 0.56340115, -1.94833742, -0.4047902, 0.76519159, -1.35562563]
+#trajs.append(GcsTrajOpt(seeds["Transition"], jelloUpPos))
 
-jelloGrab[-1] += math.pi/2
+import yaml
 
-tideUpPos = [-2.0033341, 0.57914925, 0.61913132, -1.56970203, -0.36290568, 1.10890311, -1.2293522 ]
-tideUpPos[-1] += math.pi/2
+def extract(file_name:str):
+    with open(file_name, "r") as yaml_file:
+        extracted_list = yaml.load(yaml_file, Loader=yaml.FullLoader)
+    return extracted_list
 
-tideGrab = [-1.95768116, 0.71346724, 0.55135146, -1.6421036, -0.44657148, 0.91555577, -1.16952908]
-tideGrab[-1] += math.pi/2
+policy_trajs = extract("traj2.yaml")
 
-cupGrab = [-2.15496806, 0.83227552, 0.46040382, -1.38088237, -0.3967169, 1.01938937, -1.62434109]
-cupGrab[-1] += math.pi/8
-
-cupUp = [-1.69340663, 0.68390589, -0.29562936, -1.3059921, 0.20039026, 1.17915618, -2.00987056]
-cupUp[-1] += math.pi/8
-
-glassUp = [-0.95816858, 0.58765876, -0.52798669, -1.61296202, 0.34795992, 1.00571432, (3.05432619 - (math.pi / 7))]
-glassUpBigger = [-0.95816858, 0.30765876, -0.52798669, -1.61296202, 0.34795992, 1.00571432, (3.05432619 - (math.pi / 7))]
-
-glassGrab = [-0.95816858, 0.69765876, -0.52798669, -1.61296202, 0.34795992, 1.00571432, (3.05432619 - (math.pi / 7))]
-
-trajs.append(GcsTrajOpt(seeds["Transition"], jelloUpPos))
-
-trajs.append(move_down_finalPose(trajs, 0.1))
-
-trajs.append(GcsTrajOpt(jelloUpPos, seeds["Between Bins"]))
-
-trajs.append(GcsTrajOpt(seeds["Between Bins"], seeds["Deposit Pos 2"]))
-
-trajs.append(GcsTrajOpt(seeds["Deposit Pos 2"], tideUpPos))
-
-trajs.append(move_down_finalPose(trajs, 0.1))
-
-trajs.append(GcsTrajOpt(tideUpPos, seeds["Between Bins"]))
-
-trajs.append(GcsTrajOpt(seeds["Between Bins"], seeds["Above Bin 2"]))
-
-trajs.append(GcsTrajOpt(seeds["Above Bin 2"], seeds["Transition"]))
-
-trajs.append(GcsTrajOpt(seeds["Transition"], cupUp)) ###
-
-trajs.append(move_down_finalPose(trajs, 0.1))
-
-trajs.append(GcsTrajOpt(cupUp, seeds["Between Bins"]))
-
-trajs.append(GcsTrajOpt(seeds["Between Bins"], seeds["Above Bin 2"]))
-
-trajs.append(GcsTrajOpt(seeds["Above Bin 2"], seeds["Between Bins"]))
-
-trajs.append(GcsTrajOpt(seeds["Between Bins"], glassUp))
-
-trajs.append(move_down_finalPose(trajs, 0.05))
-
-trajs.append(move_down(trajs, -0.1))
-
-trajs.append(GcsTrajOpt(glassUpBigger, seeds["Deposit Pos 2 Up"]))
-
-trajs.append(GcsTrajOpt(seeds["Deposit Pos 2 Up"], seeds["Deposit Pos 2"]))
-
-#trajs.append(move_schunk(trajs, [0.05, -0.05, -0.05]))
-
-#trajs.append(move_schunkAng(trajs, [-0.05, 0.05, 0.05], [-1.35, 0, 1.4]))
-
-#trajs.append(move_schunkAng(trajs, [0.05, -0.05, 0.0], [-1.9, 0, 1.1]))
-
-#trajs.append(move_schunkAng(trajs, [-0.1, -0.05, 0], [-1.5, 0.5, 1.4]))
-
-#trajs.append(move_schunkAng(trajs, [-0.05, -0.15, 0.1], [-1.5, 0.5, 1.7]))
-
-#trajs.append(move_schunkAng(trajs, [0.0, 0.0, 0.1], [-1.5, -0.5, 1.4]))
-
-#trajs.append(move_schunkAng(trajs, [0.0, 0.0, 0.1], [-1.5, -0.5, 1.4]))
-
-#trajs.append(move_schunkAng(trajs, [0.1, 0.0, 0], [-1.5, 0.0, 1.8]))
-
-#trajs.append(move_schunkAng(trajs, [0.01, 0.01, -0.015], [-1.34, -0.65, 1.55]))
-
-Rstraight=RotationMatrix([
-    [0.05597484092032722, -0.0010961886872575403, -0.998431577803059],
-    [0.9984194494229444, -0.004988304216565806, 0.055979637682178125],
-    [-0.005041844695051499, -0.9999869575106491, 0.0008152365706108688],
-  ])
-#trajs.append(move_schunkAngRotMat(trajs, [0, 0, -0.05], Rstraight))
-
+for traj in policy_trajs:
+    trajs.append(traj)
 
 diagram, context, robot, objPos, plant, internalPlantContext = make_environment_model_display(
     trajs, rng=np.random.default_rng(), num_ycb_objects=1, draw=True
 )
-wsg = plant.GetModelInstanceByName("wsg")
 
 simulator = Simulator(diagram)
 simulator.Initialize()

@@ -21,7 +21,7 @@ from pydrake.all import (
     JacobianWrtVariable,
     Quaternion,
 )
-from manipulation.station import MakeHardwareStation, load_scenario
+from manipulation.station import MakeHardwareStation, load_scenario, LoadScenario
 from manipulation import running_as_notebook
 from manipulation.scenarios import AddFloatingRpyJoint, AddRgbdSensors, ycb
 from manipulation.utils import ConfigureParser
@@ -106,6 +106,7 @@ class TrajPosOut(LeafSystem):
         3 - move with diff ik
         '''
         self.order = [0, -5, 3, -2, 0, 0, -2, 0, 3, -2, 0, 0, -2, 0, 0, 3, -2, 0, 0, -2, 0, 0, 3,2, -2, 0,0, -2]
+        #self.order = [0, -2, 2, -5]
         self.endCondTime = False
         self.startTime = 0
         self.firstRunToStart = True
@@ -327,22 +328,25 @@ def make_environment_model_display(
     builder = DiagramBuilder()
     
     obj = None
-    
+
     scenario_data = (
         """
     directives:
     - add_directives:
-        file: package://manipulation/two_bins.dmd.yaml
-    - add_directives:
         file: package://manipulation/iiwa_and_wsg.dmd.yaml
     plant_config:
         time_step: 0.005
-        contact_model: "hydroelastic"
-        discrete_contact_solver: "sap"
+        contact_model: "hydroelastic_with_fallback"
+        discrete_contact_approximation: "sap"
     model_drivers:
         iiwa: !IiwaDriver
+            lcm_bus: "default"
             hand_model_name: wsg
+            control_mode: position_only
         wsg: !SchunkWsgDriver {}
+    lcm_buses:
+        default:
+            lcm_url: ""
     """
         if has_wsg
         else """
@@ -353,18 +357,24 @@ def make_environment_model_display(
         # For some reason, this requires a small timestep
         time_step: 0.0001
         contact_model: "hydroelastic"
-        discrete_contact_solver: "sap"
+        discrete_contact_approximation: "sap"
     model_drivers:
-        iiwa: !IiwaDriver {}
-            
-    """)
+        iiwa: !IiwaDriver
+            lcm_bus: "default"
+            control_mode: position_only
+    lcm_buses:
+        default:
+            lcm_url: ""
+    """
+    )
 
-    scenario = load_scenario(data=scenario_data)
+    builder = DiagramBuilder()
 
+    scenario = LoadScenario(data=scenario_data)
     station: IiwaHardwareStationDiagram = builder.AddNamedSystem(
         "station",
         IiwaHardwareStationDiagram(
-            scenario=scenario, has_wsg=True, use_hardware=False,
+            scenario=scenario, has_wsg=has_wsg, use_hardware=True
         ),
     )
 
@@ -758,7 +768,7 @@ from pydrake.geometry.optimization import Point, GraphOfConvexSetsOptions
 def LoadRobot(plant: MultibodyPlant) -> Body:
     parser = Parser(plant)
     ConfigureParser(parser)
-    parser.AddModelsFromUrl("package://manipulation/clutter_planning.dmd.yaml")
+    #parser.AddModelsFromUrl("package://manipulation/clutter_planning.dmd.yaml")
     # We'll use some tables, shelves, and bins from a remote resource.
     parser.package_map().AddRemote(
         package_name="gcs",
@@ -778,7 +788,7 @@ directives:
 # Add iiwa
 - add_model:
     name: iiwa
-    file: package://drake/manipulation/models/iiwa_description/urdf/iiwa14_primitive_collision.urdf
+    file: package://drake_models/iiwa_description/urdf/iiwa14_primitive_collision.urdf
     default_joint_positions:
         iiwa_joint_1: [0]
         iiwa_joint_2: [0.3]
@@ -795,7 +805,7 @@ directives:
 # Add schunk
 - add_model:
     name: wsg
-    file: package://drake/manipulation/models/wsg_50_description/sdf/schunk_wsg_50_welded_fingers.sdf
+    file: package://drake_models/wsg_50_description/sdf/schunk_wsg_50_welded_fingers.sdf
 
 - add_weld:
     parent: iiwa::iiwa_link_7
@@ -808,8 +818,8 @@ directives:
 
     parser.AddModelsFromString(model_directives, ".dmd.yaml")
 
-    extraGrip = plant.GetModelInstanceByName("gripper")
-    plant.WeldFrames(plant.world_frame(), plant.GetFrameByName("body", extraGrip), xyz_rpy_deg([0, 0, 0], [0, 0, 0]))
+    #extraGrip = plant.GetModelInstanceByName("gripper")
+    #plant.WeldFrames(plant.world_frame(), plant.GetFrameByName("body", extraGrip), xyz_rpy_deg([0, 0, 0], [0, 0, 0]))
 
     gripper = plant.GetModelInstanceByName("wsg")
     end_effector_body = plant.GetBodyByName("body", gripper)
@@ -829,7 +839,7 @@ directives:
 # Add iiwa
 - add_model:
     name: iiwa
-    file: package://drake/manipulation/models/iiwa_description/urdf/iiwa14_primitive_collision.urdf
+    file: package://drake_models/iiwa_description/urdf/iiwa14_primitive_collision.urdf
     default_joint_positions:
         iiwa_joint_1: [0]
         iiwa_joint_2: [0.3]
@@ -846,7 +856,7 @@ directives:
 # Add schunk
 - add_model:
     name: wsg
-    file: package://drake/manipulation/models/wsg_50_description/sdf/schunk_wsg_50_welded_fingers.sdf
+    file: package://drake_models/wsg_50_description/sdf/schunk_wsg_50_welded_fingers.sdf
 
 - add_weld:
     parent: iiwa::iiwa_link_7
@@ -1166,6 +1176,7 @@ def move_schunkAngRotMat(trajs, dists, angs):
     return linMoveTraj
 
         
+
 del iris_regions["GraspPos12"]
 del iris_regions["GraspPos13"]
 del iris_regions["GraspPos17"]
@@ -1189,8 +1200,8 @@ del iris_regions["GraspPos8"]
 del iris_regions["GraspPos9"]
 del iris_regions["GraspPos15"]
 del iris_regions["Transition"]
-del iris_regions["TransitionNoObs"]
-del iris_regions["TransitionNoObs2"]
+#del iris_regions["TransitionNoObs"]
+#del iris_regions["TransitionNoObs2"]
 
 
 #meshcat.Delete()
@@ -1262,7 +1273,8 @@ glassUp = [-0.95816858, 0.58765876, -0.52798669, -1.61296202, 0.34795992, 1.0057
 glassUpBigger = [-0.95816858, 0.30765876, -0.52798669, -1.61296202, 0.34795992, 1.00571432, (3.05432619 - (math.pi / 7))]
 
 glassGrab = [-0.95816858, 0.69765876, -0.52798669, -1.61296202, 0.34795992, 1.00571432, (3.05432619 - (math.pi / 7))]
-'''
+
+
 trajs.append(GcsTrajOpt(seeds["Transition"], jelloUpPos))
 
 trajs.append(move_down_finalPose(trajs, 0.1))
@@ -1300,9 +1312,9 @@ trajs.append(move_down(trajs, -0.1))
 trajs.append(GcsTrajOpt(glassUpBigger, seeds["Deposit Pos 2 Up"]))
 
 trajs.append(GcsTrajOpt(seeds["Deposit Pos 2 Up"], seeds["Deposit Pos 2"]))
-'''
 
-trajs = [GcsTrajOpt(seeds["Transition"], np.array([-1.20294991,  0.4928231 ,  0.21982729, -1.99237127, -0.47764283, 0.73075879,  0.22133022]))]
+
+#trajs = [GcsTrajOpt(seeds["Transition"], np.array([-1.20294991,  0.4928231 ,  0.21982729, -1.99237127, -0.47764283, 0.73075879,  0.22133022]))]
 
 
 Rstraight=RotationMatrix([
