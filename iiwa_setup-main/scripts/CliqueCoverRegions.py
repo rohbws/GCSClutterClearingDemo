@@ -14,7 +14,7 @@ def get_regions():
     params = dict(edge_step_size=0.125)
     iiwa_model_instance_index = plant.GetModelInstanceByName("iiwa")
     wsg_model_instance_index = plant.GetModelInstanceByName("wsg")
-    params["robot_model_instances"] = [iiwa_model_instance_index, wsg_model_instance_index]
+    params["robot_model_instances"] = [iiwa_model_instance_index, wsg_model_instance_index, plant.GetModelInstanceByName("iiwa2"), plant.GetModelInstanceByName("wsg2")]
     params["model"] = diagram
     checker = SceneGraphCollisionChecker(**params)
 
@@ -25,7 +25,7 @@ def get_regions():
 
     generator = RandomGenerator(0)
 
-    if (MosekSolver().available() and MosekSolver().enabled()) or (
+    if True or (MosekSolver().available() and MosekSolver().enabled()) or (
             GurobiSolver().available() and GurobiSolver().enabled()):
         # We need a MIP solver to be available to run this method.
         sets = plan.IrisInConfigurationSpaceFromCliqueCover(
@@ -42,4 +42,4 @@ def get_regions():
 
 regions = get_regions()
 
-SaveIrisRegionsYamlFile("CliqueCoverRegions.yaml", regions)
+SaveIrisRegionsYamlFile("CliqueCoverRegionsTwoRobots.yaml", regions)

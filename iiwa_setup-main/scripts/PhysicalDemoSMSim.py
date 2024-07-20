@@ -21,16 +21,19 @@ from pydrake.math import RigidTransform, RollPitchYaw
 from pydrake.systems.framework import LeafSystem
 import math
 
-from manipulation.clutter import GenerateAntipodalGraspCandidate
-
 from pydrake.all import Simulator
+from manipulation.clutter import GenerateAntipodalGraspCandidate
 
 from forward_kinematics import forward_kinematics, IiwaForwardKinematics
 
 from HardwareSetup import *
 
+import HardwareSetup as HS
 
-iris_filename = "my_irisHardware.yaml"
+from manipulation import ConfigureParser, FindResource, running_as_notebook
+
+
+iris_filename = "my_irisSim.yaml"
 iris_regions = dict()
 q = []
 
@@ -53,6 +56,7 @@ class trajOperator():
         self.traj = traj
         self.iiwaInPort = iiwaInPort
         self.gripper = self.plant.GetModelInstanceByName("wsg")
+        self.plantInstance = self.plant.GetModelInstanceByName("iiwa")
         self.firstCall = True
         self.startReached = False
         self.stackTime = context.get_time()
@@ -76,7 +80,7 @@ class trajOperator():
         if self.firstCall and self.startReached:
             plantCont = self.plant.CreateDefaultContext()
             
-            self.plant.SetPositions(plantCont, np.concatenate((self.lastPos,[0,0])))
+            self.plant.SetPositions(plantCont, self.plantInstance, self.lastPos)
             self.startEE = self.plant.GetFrameByName("body", self.gripper).CalcPoseInWorld(plantCont).translation()
 
             self.stackTime = context.get_time()
@@ -87,7 +91,7 @@ class trajOperator():
         if self.runToStartRequried() and not self.startReached:
             targPos = 0
             targPosCoeff = 0.9995
-            targPosCoeff = math.atan(100.0*startDist) * 2.0 * 0.9995 * 0.3 / math.pi + 0.7
+            targPosCoeff = math.atan(1000.0*startDist) * 2.0 * 0.9995 * 0.3 / math.pi + 0.7
             targPos = targPosCoeff * np.array(self.lastPos).flatten() + (1-targPosCoeff) * np.array(self.getRunStartPos(context)).flatten()
 
             self.lastPos = targPos.copy()
@@ -95,28 +99,28 @@ class trajOperator():
             return targPos
 
         if self.type == 0 or self.type == 4:
-            newPos = np.array(self.traj.value((context.get_time() - self.stackTime) * 0.5)).flatten()
-            newPos[0] = newPos[0] + 1.57
+            newPos = np.array(self.traj.value((context.get_time() - self.stackTime) * 0.2)).flatten()
+            #newPos[0] = newPos[0] + 1.57
         elif self.type == 1:
             plantCont = self.plant.CreateDefaultContext()
             curPos = self.lastPos.copy()
-            curPos = np.concatenate((curPos, [0,0]))
-            self.plant.SetPositions(plantCont, curPos)
+            #curPos = np.concatenate((curPos, [0,0]))
+            self.plant.SetPositions(plantCont, self.plantInstance, curPos)
 
             params = DifferentialInverseKinematicsParameters(self.plant.num_positions(),
                                                              self.plant.num_velocities())
             newPos = np.array(DoDifferentialInverseKinematics(self.plant, plantCont, [0, 0, 0, 0, 0,-1], self.plant.GetFrameByName("body", self.gripper), params).joint_velocities)[0:7]
-            newPos = np.array(curPos)[0:7] + 0.001 * newPos
+            newPos = np.array(curPos)[0:7] + 0.0001 * newPos
         elif self.type == 3:
             plantCont = self.plant.CreateDefaultContext()
             curPos = self.lastPos.copy()
-            curPos = np.concatenate((curPos, [0,0]))
-            self.plant.SetPositions(plantCont, curPos)
+            #curPos = np.concatenate((curPos, [0,0]))
+            self.plant.SetPositions(plantCont, self.plantInstance, curPos)
 
             params = DifferentialInverseKinematicsParameters(self.plant.num_positions(),
                                                              self.plant.num_velocities())
             newPos = np.array(DoDifferentialInverseKinematics(self.plant, plantCont, [0, 0, 0, 0, 0,1], self.plant.GetFrameByName("body", self.gripper), params).joint_velocities)[0:7]
-            newPos = np.array(curPos)[0:7] + 0.001 * newPos
+            newPos = np.array(curPos)[0:7] + 0.0001 * newPos
         else:
             newPos = self.lastPos
 
@@ -136,7 +140,7 @@ class trajOperator():
         if self.runToStartRequried():
             if self.type == 0 or self.type == 4:
                 returnVal = np.array(self.traj.value(0)).flatten()
-                returnVal[0] += 1.57
+                #returnVal[0] += 1.57
                 return returnVal
             else:
                 raise TypeError("Run to start not required for this stage")
@@ -144,17 +148,17 @@ class trajOperator():
     def exitConditionReached(self, context, exitThresh = 0.01) -> bool:
         if self.type == 0 or self.type == 4:
             endPos = np.array(self.traj.value(self.traj.end_time())).flatten()
-            endPos[0] += 1.57
+            #endPos[0] += 1.57
             return np.linalg.norm(endPos - self.lastPos) < exitThresh
         elif self.type == 1:
             plantCont = self.plant.CreateDefaultContext()
-            self.plant.SetPositions(plantCont, np.concatenate((self.lastPos,[0,0])))
+            self.plant.SetPositions(plantCont, self.plantInstance, self.lastPos)
             endPos = self.plant.GetFrameByName("body", self.gripper).CalcPoseInWorld(plantCont).translation()
             #print(endPos[2] - self.startEE[2] + self.traj[0])
             return (endPos[2] - self.startEE[2] + self.traj[0]) < 0
         elif self.type == 3:
             plantCont = self.plant.CreateDefaultContext()
-            self.plant.SetPositions(plantCont, np.concatenate((self.lastPos,[0,0])))
+            self.plant.SetPositions(plantCont, self.plantInstance, self.lastPos)
             endPos = self.plant.GetFrameByName("body", self.gripper).CalcPoseInWorld(plantCont).translation()
             #print((endPos[2] - self.startEE[2] - self.traj[0]) )
             return (endPos[2] - self.startEE[2] - self.traj[0]) > 0
@@ -162,32 +166,43 @@ class trajOperator():
             return context.get_time() - self.stackTime - self.traj[0] > 0
         elif self.type == 5.5:
             return not (trajsEmpty(self.traj[0]))
-        
-class CameraPoseInWorldSource(LeafSystem):    
-    def __init__(self, X_ee_camera):
-        super().__init__()        # The current_cmd that should be passed to output when the current trajectory is invalid
-        self._X_EE_input_port = self.DeclareAbstractInputPort(
-            "X_EE", AbstractValue.Make(RigidTransform())
-        )        
-        self.DeclareAbstractOutputPort(
-            "X_WC",
-            lambda: AbstractValue.Make(RigidTransform()),
-            self.CalcCameraPose,
-        )        
-        self.X_ee_camera = X_ee_camera    
-    
-    def CalcCameraPose(self, context: Context, output) -> None:
-        X_EE = self.GetInputPort("X_EE").Eval(context)
-        X_WC = X_EE @ self.X_ee_camera        
-        output.set_value(X_WC)
 
+        
+def planNextTraj(trajInps, gcsTrajs, planner):
+        nextTraj = trajInps.get()
+        gcsTrajs.put(planner.GcsTrajOpt(nextTraj[0], nextTraj[1]))
+
+from pydrake.trajectories import BezierCurve, CompositeTrajectory
+
+def getNextTraj(gcstrajs):
+        if gcstrajs.empty():
+            return None
+        else:
+            nextTraj = gcstrajs.get()
+            for i in range(len(nextTraj)):
+                nextTraj[i] = BezierCurve(nextTraj[i][0], nextTraj[i][1], nextTraj[i][2])
+            return CompositeTrajectory(nextTraj)
+        
+def trajsEmpty(gcstrajs):
+    return gcstrajs.empty()
+        
+def planTrajs(trajInps, gcsTrajs, planner):
+    while True:
+        if trajInps.empty():
+            #print("Waiting for next traj inps")
+            time.sleep(0.1)
+        else:
+            print("planning!")
+            planNextTraj(trajInps, gcsTrajs, planner)
 
 # Takes 3 point clouds (in world coordinates) as input, and outputs and estimated pose for the mustard bottle.
 class GraspSelector(LeafSystem):
-    def __init__(self, camera_body_indices):
+    def __init__(self, plant, bin_instance, camera_body_indices):
         LeafSystem.__init__(self)
         model_point_cloud = AbstractValue.Make(PointCloud(0))
         self.DeclareAbstractInputPort("cloud0_W", model_point_cloud)
+        self.DeclareAbstractInputPort("cloud1_W", model_point_cloud)
+        self.DeclareAbstractInputPort("cloud2_W", model_point_cloud)
         self.DeclareAbstractInputPort(
             "body_poses", AbstractValue.Make([RigidTransform()])
         )
@@ -199,10 +214,19 @@ class GraspSelector(LeafSystem):
         )
         port.disable_caching_by_default()
 
-
+        # Compute crop box.
+        context = plant.CreateDefaultContext()
+        bin_body = plant.GetBodyByName("bin_base", bin_instance)
+        X_B = plant.EvalBodyPoseInWorld(context, bin_body)
         margin = 0.001  # only because simulation is perfect!
+        a = X_B.multiply(
+            [-0.22 + 0.025 + margin, -0.29 + 0.025 + margin, 0.015 + margin]
+        )
+        b = X_B.multiply([0.22 - 0.1 - margin, 0.29 - 0.025 - margin, 2.0])
+        self._crop_lower = np.minimum(a, b)
+        self._crop_upper = np.maximum(a, b)
 
-        self._internal_model = make_internal_model()
+        self._internal_model = HS.make_internal_model()
         self._internal_model_context = self._internal_model.CreateDefaultContext()
         self._rng = np.random.default_rng()
         self._camera_body_indices = camera_body_indices
@@ -210,9 +234,9 @@ class GraspSelector(LeafSystem):
     def SelectGrasp(self, context, output):
         body_poses = self.get_input_port(3).Eval(context)
         pcd = []
-        for i in range(1):
+        for i in range(3):
             cloud = self.get_input_port(i).Eval(context)
-            pcd.append(cloud)
+            pcd.append(cloud.Crop(self._crop_lower, self._crop_upper))
             pcd[i].EstimateNormals(radius=0.1, num_closest=30)
 
             # Flip normals toward camera
@@ -246,35 +270,6 @@ class GraspSelector(LeafSystem):
         else:
             best = np.argmin(costs)
             output.set_value((costs[best], X_Gs[best]))
-
-        
-def planNextTraj(trajInps, gcsTrajs, planner):
-        nextTraj = trajInps.get()
-        print(nextTraj)
-        gcsTrajs.put(planner.GcsTrajOpt(nextTraj[0], nextTraj[1]))
-
-from pydrake.trajectories import BezierCurve, CompositeTrajectory
-
-def getNextTraj(gcstrajs):
-        if gcstrajs.empty():
-            return None
-        else:
-            nextTraj = gcstrajs.get()
-            for i in range(len(nextTraj)):
-                nextTraj[i] = BezierCurve(nextTraj[i][0], nextTraj[i][1], nextTraj[i][2])
-            return CompositeTrajectory(nextTraj)
-        
-def trajsEmpty(gcstrajs):
-    return gcstrajs.empty()
-        
-def planTrajs(trajInps, gcsTrajs, planner):
-    while True:
-        if trajInps.empty():
-            print("Waiting for next traj inps")
-            time.sleep(0.1)
-        else:
-            print("planning!")
-            planNextTraj(trajInps, gcsTrajs, planner)
 
 import multiprocessing
 
@@ -311,30 +306,9 @@ class TrajPosOut(LeafSystem):
 
         self.backPlanning.daemon = True
 
-        self.trajInps.put([seeds["Transition"], self.antGrasp.getNextGrasp()])
+        self.trajInps.put([seeds["Transition"], [-2.27218173, 0.37183194, 0.6459329, -1.86001069, -0.26713113, 0.97730485, 0.1065661]])
         self.trajInps.put([seeds["Above Bin 1"], seeds["Above Bin 2"]])
-        self.trajInps.put([seeds["Transition"], self.antGrasp.getNextGrasp()])
-        self.trajInps.put([seeds["Above Bin 1"], seeds["Above Bin 2"]])
-        self.trajInps.put([seeds["Transition"], self.antGrasp.getNextGrasp()])
-        self.trajInps.put([seeds["Above Bin 1"], seeds["Above Bin 2"]])
-        self.trajInps.put([seeds["Transition"], self.antGrasp.getNextGrasp()])
-        self.trajInps.put([seeds["Above Bin 1"], seeds["Above Bin 2"]])
-        self.trajInps.put([seeds["Transition"], self.antGrasp.getNextGrasp()])
-        self.trajInps.put([seeds["Above Bin 1"], seeds["Above Bin 2"]])
-        self.trajInps.put([seeds["Transition"], self.antGrasp.getNextGrasp()])
-        self.trajInps.put([seeds["Above Bin 1"], seeds["Above Bin 2"]])
-        self.trajInps.put([seeds["Transition"], self.antGrasp.getNextGrasp()])
-        self.trajInps.put([seeds["Above Bin 1"], seeds["Above Bin 2"]])
-        self.trajInps.put([seeds["Transition"], self.antGrasp.getNextGrasp()])
-        self.trajInps.put([seeds["Above Bin 1"], seeds["Above Bin 2"]])
-        self.trajInps.put([seeds["Transition"], self.antGrasp.getNextGrasp()])
-        self.trajInps.put([seeds["Above Bin 1"], seeds["Above Bin 2"]])
-        self.trajInps.put([seeds["Transition"], self.antGrasp.getNextGrasp()])
-        self.trajInps.put([seeds["Above Bin 1"], seeds["Above Bin 2"]])
-        self.trajInps.put([seeds["Transition"], self.antGrasp.getNextGrasp()])
-        self.trajInps.put([seeds["Above Bin 1"], seeds["Above Bin 2"]])
-        self.trajInps.put([seeds["Transition"], self.antGrasp.getNextGrasp()])
-        self.trajInps.put([seeds["Above Bin 1"], seeds["Above Bin 2"]])
+
 
         self.currTraj = None
 
@@ -351,7 +325,6 @@ class TrajPosOut(LeafSystem):
         else:
             output.SetFromVector([self.state])
 
-    
     def calciiwaPos(self, context, output):
 
         '''
@@ -445,7 +418,7 @@ class AntipodalGrasps(LeafSystem):
             "grasps", AbstractValue.Make((np.inf, RigidTransform()))
         ).get_index()
 
-        self.plant = LoadRobotHardwareStation()[0]
+        self.plant = HS.LoadRobotHardwareStation()[0]
         self.plant_context = self.plant.CreateDefaultContext()
 
         self.DeclareVectorOutputPort("grasp_position", BasicVector(7), self.getNextGrasp)
@@ -498,7 +471,7 @@ class GCSPlanner():
         self.plant_context = self.plant.CreateDefaultContext()
         #self.trajs = queue.Queue()
         #self.trajInps = queue.Queue()
-        iris_filename = "my_irisHardware.yaml"
+        iris_filename = "my_irisSim.yaml"
         self.grasPosRegs = [['GraspPos1', 'GraspPos11', 'GraspPos14', 'GraspPos16', 'GraspPos25', 'GraspPos26', 'GraspPos27', 'GraspPos6'], ['GraspPos1', 'GraspPos11', 'GraspPos14', 'GraspPos16', 'GraspPos25', 'GraspPos26', 'GraspPos27', 'GraspPos6'], ['GraspPos1', 'GraspPos11', 'GraspPos14', 'GraspPos16', 'GraspPos25', 'GraspPos0', 'GraspPos6'], ['GraspPos1', 'GraspPos11', 'GraspPos14', 'GraspPos16', 'GraspPos25', 'GraspPos26', 'GraspPos27', 'GraspPos6'], ['GraspPos1', 'GraspPos11', 'GraspPos14', 'GraspPos16', 'GraspPos25', 'GraspPos26', 'GraspPos27', 'GraspPos6'], ['GraspPos1', 'GraspPos11', 'GraspPos14', 'GraspPos16', 'GraspPos25', 'GraspPos26', 'GraspPos27', 'GraspPos6'], ['GraspPos1', 'GraspPos11', 'GraspPos14', 'GraspPos16', 'GraspPos25', 'GraspPos0', 'GraspPos6'], ['GraspPos1', 'GraspPos11', 'GraspPos14', 'GraspPos16', 'GraspPos25', 'GraspPos26', 'GraspPos27', 'GraspPos6']]
         self.iris_regions = dict()
         self.iris_regions.update(LoadIrisRegionsYamlFile(iris_filename))
@@ -549,17 +522,20 @@ class GCSPlanner():
                 "No IRIS regions loaded. Make some IRIS regions then come back and try this again."
             )
             return
+        
+        print(f"Planning trajectory {self.iter} from {q_start} to {q_goal}")
         assert len(q_start) == len(q_goal)
         assert len(q_start) == self.iris_regions[next(iter(self.iris_regions))].ambient_dimension()
 
         edges = []
 
         gcs = GcsTrajectoryOptimization(len(q_start))
-        regions = gcs.AddRegions(list(self.iris_regions.values()), order=3)
-        source = gcs.AddRegions([Point(q_start)], order=3)
-        target = gcs.AddRegions([Point(q_goal)], order=3)
+        regions = gcs.AddRegions(list(self.iris_regions.values()), order=1)
+        source = gcs.AddRegions([Point(q_start)], order=0)
+        target = gcs.AddRegions([Point(q_goal)], order=0)
         edges.append(gcs.AddEdges(source, regions))
         edges.append(gcs.AddEdges(regions, target))
+
         
         gcs.AddTimeCost(weight=0.5)
         gcs.AddPathLengthCost()
@@ -568,8 +544,9 @@ class GCSPlanner():
         )
 
         options = GraphOfConvexSetsOptions()
+        options.solver = MosekSolver()
         options.preprocessing = True
-        options.max_rounded_paths = 5
+        #options.max_rounded_paths = 5
         start_time = time.time()
         print("Running GCS")
         traj, result = gcs.SolvePath(source, target, options)
@@ -620,12 +597,27 @@ seeds["Transition"] = [-0.75, -0.61, 0, -1.8, 0, 1, 1.57]
 
 seeds["Between Bins"] = [-0.785, 0.2, 0, -1.8, 0, 1, 1.57]        
 
-diagram, context, robot, plant, internalPlantContext = make_environment_model_hardware(
-    hardware=True, TrajPosOut=TrajPosOut, WSGOut=WSGOut, CameraPoseInWorldSource=CameraPoseInWorldSource, GraspSelector=GraspSelector, AntipHandler = AntipodalGrasps
+diagram, context, robot, plant, mesh = make_environment_model_sim(
+    TrajPosOut=TrajPosOut, WSGOut=WSGOut, GraspSelector = GraspSelector, AntipHandler = AntipodalGrasps
 )
 wsg = plant.GetModelInstanceByName("wsg")
 
 simulator = Simulator(diagram)
+#simulator.AdvanceTo(0.1)
+#mesh.Flush()
+#print("Running sim")
 simulator.Initialize()
-simulator.set_target_realtime_rate(1)
-simulator.AdvanceTo(600.0)
+
+mesh.Flush()
+
+mesh.StartRecording()
+simulator.set_target_realtime_rate(10)
+
+try:
+    simulator.AdvanceTo(300.0)
+except:
+    ...
+
+mesh.StopRecording()
+mesh.PublishRecording()
+time.sleep(50)
